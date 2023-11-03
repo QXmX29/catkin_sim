@@ -1,0 +1,2 @@
+catkin_simple:eigen_catkin:racebot_control:racebot_description:racebot_gazebo:uav_sim
+-DCATKIN_DEVEL_PREFIX=/home/thudrone/catkin_sim/devel -DCMAKE_INSTALL_PREFIX=/home/thudrone/catkin_sim/install -G Unix Makefiles

@@ -1,0 +1,2 @@
+- setup-file:
+    local-name: /home/thudrone/catkin_sim/install/setup.sh

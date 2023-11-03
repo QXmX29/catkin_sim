@@ -12,6 +12,7 @@ pip install apriltag
 roslaunch uav_sim demo1.launch
 rosrun uav_sim demo1.py
 
+# add: msg
 roslaunch uav_sim env.launch
 
 rqt_image_view

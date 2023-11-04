@@ -13,14 +13,17 @@ from scipy.spatial.transform import Rotation as R
 from collections import deque
 from enum import Enum
 import rospy
-import cv2
 import numpy as np
 import math
+
 from std_msgs.msg import String, Bool
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import Image
+
 from cv_bridge import CvBridge, CvBridgeError
+import cv2
 import apriltag
+import random
 
 
 class TestNode:
@@ -78,7 +81,7 @@ class TestNode:
         if self.flight_state_ == self.FlightState.WAITING:  # 等待裁判机发布开始信号后，起飞
             rospy.logwarn('State: WAITING')
             self.publishCommand('takeoff')
-            self.navigating_queue_ = deque([['z', 1.8]])#将无人机下次移动的目标设为y=1.8
+            self.navigating_queue_ = deque([['z', 2]])#将无人机下次移动的目标设为y=1.8
             self.switchNavigatingState()#调用状态转移函数
             # self.flight_state_=self.FlightState.NAVIGATING#下一个状态为“导航”
 
@@ -180,34 +183,71 @@ class TestNode:
 
     # 判断是否检测到目标
     def detectTarget(self):
+        #版本2.0: 一次性判断，无坐标追踪&反复确认
         if self.image_ is None:
             return False
         image_target = self.image_.copy()
         #处理前视相机图像，检测货物
-        image_target_gray = cv2.cvtColor(image_target, cv2.COLOR_BGR2GRAY)#转换为灰度图
-        image_target_g=cv2.GaussianBlur(image_target_gray, (3, 3), 0)#滤波
-        circles = cv2.HoughCircles(image_target_g, cv2.HOUGH_GRADIENT, 1, 100, param1=80, param2=40, minRadius=20, maxRadius=150)  #霍夫圆检测
-        #画圈
+        image_target_rgb = cv2.cvtColor(image_target, cv2.COLOR_BGR2RGB)
+        image_hsv = cv2.cvtColor(image_target_rgb, cv2.COLOR_RGB2HSV)
+        # edges = cv2.Canny(image_target, 100, 200) # Canny边缘检测
+        #由于货物边缘不如圆环清晰，所以先尝试锁定颜色
         target = ''
         color_dict = {"r":[{"lower":np.array([0,43,46]), "upper":np.array([10,255,255])},\
                            {"lower":np.array([156,43,46]), "upper":np.array([180,255,255])}],
                       "y":[{"lower":np.array([26,43,46]), "upper":np.array([34,255,255])}],
                       "b":[{"lower":np.array([100,43,46]), "upper":np.array([124,255,255])}]}
-        if circles is not None:
-            image_hsv = cv2.cvtColor(image_target, cv2.COLOR_BGR2HSV)
-            for i in circles[0,:]:
-                cv2.circle(image_target, (i[0], i[1]), i[2], (125, 125, 125), 3)  # 画圆
-                cv2.circle(image_target, (i[0], i[1]), 2, (125, 125, 125), 3)  # 画圆心
-                #输出圆心的图像坐标和半径
-                rospy.loginfo("( %d  ,  %d ),r=  %d ",i[0],i[1],i[2])
-                for color in color_dict.keys():
-                    for color_range in color_dict[color]:
-                        mask = cv2.inRange(image_hsv, color_range["lower"], color_range["upper"])
-                        # res = cv2.bitwise_and(image_target, image_target, mask)
-                        srate = sum(mask/255)/(math.pi*i[2]**2)
-                        rospy.loginfo(color+": "+str(srate))
-                        if srate>1:
-                            target += color
+        for color in color_dict.keys():
+            for color_range in color_dict[color]:
+                mask = cv2.inRange(image_hsv, color_range["lower"], color_range["upper"])
+                # plt.imshow(mask), plt.axis("off"), plt.show()
+                img = mask.copy()
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (30,30))
+                erosion = cv2.erode(img, kernel, iterations=2)
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (50,50))
+                dilation = cv2.dilate(erosion, kernel, iterations=1)
+                mask = dilation
+                mask_g = cv2.GaussianBlur(mask, (3, 3), 0)#滤波
+                circles = cv2.HoughCircles(mask_g, cv2.HOUGH_GRADIENT, 1, 100, param1=80, param2=40, minRadius=20, maxRadius=150)  #霍夫圆检测
+                if circles is not None:
+                    circles = circles.astype(int)
+                    for i in circles[0,:]:
+                        cv2.circle(image_target, (i[0], i[1]), i[2], (125, 125, 125), 3)  # 画圆
+                        cv2.circle(image_target, (i[0], i[1]), 2, (125, 125, 125), 3)  # 画圆心
+                        #输出圆心的图像坐标和半径
+                        print(f"( {i[0]} , {i[1]} ),r= {i[2]}")
+                        #内接正方形像素点求和取平均，查看是否为圆环
+                        len_a = int(i[2]/math.sqrt(2))-1
+                        inscribed_square = mask[(i[0]-len_a):(i[0]+len_a), (i[1]-len_a):(i[1]+len_a)]
+                        occupy_rate = sum(sum(inscribed_square/255))/inscribed_square.size
+                        #设定阈值，占比大于阈值的是球而非圆环
+                        if occupy_rate>0.7:
+                            print(f"Detected ball with color \'{color}\'~")
+                else:
+                    img_zero = np.zeros(np.shape(image_target), dtype=np.uint8)
+                    image_target_res = cv2.add(image_target_rgb, img_zero, mask=mask)#添加掩码
+                    #寻找轮廓和外接圆并绘制
+                    contours, hierarchy = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                    if len(contours)>0:
+                        dst = image_target_res.copy()
+                        dst = cv2.drawContours(dst, contours, -1, (125, 125, 125), 8)
+                        (cx, cy), cr = cv2.minEnclosingCircle(contours[0])
+                        dst = cv2.circle(dst, (int(cx), int(cy)), int(cr), (201, 172, 221), 5)
+                        #在空白图上画实心圆
+                        enclosing_circle = img_zero.copy()
+                        enclosing_circle = cv2.circle(enclosing_circle, (int(cx), int(cy)), int(cr), (255, 255, 255), -1)
+                        img_base = enclosing_circle[:,:,0]#都是255所以随便一个维度都行
+                        img_res = cv2.add(mask, img_zero[:,:,0], mask=img_base)#添加掩码
+                        cbase = (sum(sum(img_base/255)))
+                        ctarget = (sum(sum(img_res/255)))
+                        occupy_rate = ctarget/cbase
+                        print(f"{img_res.shape}, {img_base.shape}")
+                        print(f"{ctarget}/{cbase}={occupy_rate}")
+                        #设定阈值，占比大于阈值的很可能是货物
+                        if occupy_rate>0.6:
+                            print(f"Detected ball with color \'{color}\'~")
+                        else:
+                            pass
         #若检测到了货物，则发布识别到的货物信号,例如识别到了红色和黄色小球，则发布“ry”
         if len(target)==1:
             if self.ring_num_==1:

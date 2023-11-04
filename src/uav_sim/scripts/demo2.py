@@ -45,6 +45,9 @@ class TestNode:
         self.image_ = None#前视相机图像
         self.image_down = None#下视相机图像
         self.bridge_ = CvBridge()#图像转换
+        # 临时flag，只是想查看传输图像的长宽
+        self.temp_flag = True
+        self.temp_flag_down = True
 
         self.flight_state_ = self.FlightState.WAITING#初始飞行状态为“等待”
         self.navigating_queue_ = deque()  # 存放多段导航信息的队列，队列元素为二元list，list的第一个元素代表导航维度（'x' or 'y' or 'z'），第二个元素代表导航目的地在该维度的坐标
@@ -285,12 +288,18 @@ class TestNode:
     # 接收前视相机图像
     def imageCallback(self, msg):
         try:
+            if self.temp_flag:
+                rospy.logwarn(f"CAM_DOWN: H={msg.height}, W={msg.width}")
+                self.temp_flag = False
             self.image_ = self.bridge_.imgmsg_to_cv2(msg, 'bgr8')
         except CvBridgeError as err:
             print(err)
     #接受下视相机图像
     def imageCallback_down(self,msg):
         try:
+            if self.temp_flag_down:
+                rospy.logwarn(f"CAM_DOWN: H={msg.height}, W={msg.width}")
+                self.temp_flag_down = False
             self.image_down = self.bridge_.imgmsg_to_cv2(msg, 'bgr8')
         except CvBridgeError as err:
             print(err)

@@ -102,9 +102,6 @@ class TestNode:
                     self.targetPub_.publish(self.target_result_)
                 self.flight_state_=self.FlightState.NAVIGATING#下一个状态为“导航”
             else:#若没有检测到货物，则采取一定的策略，继续寻找货物
-                while len(self.navigating_queue_)>0:
-                    next_nav = self.navigating_queue_.popleft()# 从队列头部取出无人机下一次导航的状态信息
-                    self.Fly(next_nav)
                 self.switchNavigatingState()
 
 
@@ -130,56 +127,68 @@ class TestNode:
     
     # 在飞行过程中，更新导航状态和信息
     def switchNavigatingState(self):
-            if self.flight_state_ == self.FlightState.WAITING:
-                self.next_state_ = self.FlightState.NAVIGATING
-            if self.flight_state_ == self.FlightState.NAVIGATING:#如果当前状态为“导航”，则处理self.image_，得到无人机当前位置与圆环的相对位置，更新下一次导航信息和飞行状态
-            #...
-            #假如此时已经穿过了圆环，则发出相应的信号
-                self.ring_num_ = 1
-                # self.ring_num_ = self.ring_num_ + 1
-            #判断是否已经穿过圆环
-                if self.ring_num_ > 0:
-                    self.ringPub_.publish('ring '+str(self.ring_num_))
-                    self.next_state_=self.FlightState.NAVIGATING
-            #如果穿过了第一个或第四个圆环，则下一个状态为“识别货物”
-                    if self.ring_num_ == 1 or self.ring_num_ ==4 :
-                        self.next_state_ = self.FlightState.DETECTING_TARGET
-                    if self.ring_num_== 5:
-                        self.next_state_ = self.FlightState.LANDING
-            if self.flight_state_ == self.FlightState.DETECTING_TARGET:#如果当前状态为“识别货物”，则采取一定策略进行移动，更新下一次导航信息和飞行状态
-                detect_tag = True
+        if self.flight_state_ == self.FlightState.WAITING:
+            self.next_state_ = self.FlightState.NAVIGATING
+        if self.flight_state_ == self.FlightState.NAVIGATING:#如果当前状态为“导航”，则处理self.image_，得到无人机当前位置与圆环的相对位置，更新下一次导航信息和飞行状态
+        #...
+        #假如此时已经穿过了圆环，则发出相应的信号
+            self.ring_num_ = 1
+            # self.ring_num_ = self.ring_num_ + 1
+        #判断是否已经穿过圆环
+            if self.ring_num_ > 0:
+                self.ringPub_.publish('ring '+str(self.ring_num_))
+                self.next_state_=self.FlightState.NAVIGATING
+        #如果穿过了第一个或第四个圆环，则下一个状态为“识别货物”
+                if self.ring_num_ == 1 or self.ring_num_ ==4 :
+                    self.next_state_ = self.FlightState.DETECTING_TARGET
+                if self.ring_num_== 5:
+                    self.next_state_ = self.FlightState.LANDING
+        if self.flight_state_ == self.FlightState.DETECTING_TARGET:#如果当前状态为“识别货物”，则采取一定策略进行移动，更新下一次导航信息和飞行状态
+            # 策略1.0: 利用下视摄像头瞄准二维码，上下左右移动配合机身旋转进行扫描
+            try:
                 # 检测二维码
-                try:
-                    image_down_cp = self.image_down.copy()
-                    image_down_gray = cv2.cvtColor(image_down_cp, cv2.COLOR_BGR2GRAY)#转换为灰度图
-                    image_down_g = cv2.GaussianBlur(image_down_gray, (3, 3), 0)#滤波
-                    at_detector = apriltag.Detector(apriltag.DetectorOptions(families='tag36h11 tag25h9'))
-                    tags = at_detector.detect(image_down_g)
-                    if tags is not None:
-                        for tag in tags:
-                            cv2.circle(image_down_cp, tuple(tag.center.astype(int)), 4, (2, 180, 200), 4)
-                            length=tag.corners[1].astype(int)[0]-tag.corners[0].astype(int)[0]
-                            y = -(tag.center[0].astype(int)-160)*60/length # y为左侧, left/right
-                            x = -(tag.center[1].astype(int)-120)*60/length # x为前方, forward/back
-                            if math.fabs(x)>0.1 or math.fabs(y)>0.1:
-                                self.navigating_queue_ = deque([['x', x]])
-                                self.navigating_queue_ = deque([['y', y]])
-                            else:
-                                detect_tag = False
-                                rospy.loginfo("length="+str(length))
-                        self.image_tag_pub.publish(self.bridge_.cv2_to_imgmsg(image_down_cp, encoding='bgr8'))
-                except CvBridgeError as e:
-                    print(e)
-                # 调整高度
-                if not detect_tag:
-                    # tag
-                    self.navigating_queue_ = deque([['z', -10]])
-                # self.next_state_ = self.FlightState.DETECTING_TARGET
+                image_down_cp = self.image_down.copy()
+                image_down_gray = cv2.cvtColor(image_down_cp, cv2.COLOR_BGR2GRAY)#转换为灰度图
+                image_down_g = cv2.GaussianBlur(image_down_gray, (3, 3), 0)#滤波
+                at_detector = apriltag.Detector(apriltag.DetectorOptions(families='tag36h11 tag25h9'))
+                tags = at_detector.detect(image_down_g)
+                if tags is not None:
+                    # 其实应该只能检测到一个
+                    if len(tags)>1:
+                        rospy.logwarn(f"TOO MANY TAGS! (DETECTED {len(tags)} TAGS)!")
+                    for tag in tags:
+                        cv2.circle(image_down_cp, tuple(tag.center.astype(int)), 4, (2, 180, 200), 4)
+                        # Apriltag的边长length是相机图像中的像素差?
+                        length=tag.corners[1].astype(int)[0]-tag.corners[0].astype(int)[0]
+                        rospy.loginfo(f"Apriltag: length={length}")
+                        # 相对图片中心的距离<->相对此时无人机左右偏移二维码的距离(==0)
+                        th_LR = 0
+                        th_FB = 0
+                        y = -(tag.center[0].astype(int)-(160+th_LR))*60/length # y为左侧, left/right
+                        x = -(tag.center[1].astype(int)-(120+th_FB))*60/length # x为前方, forward/back
+                        # 必要时调整位置
+                        if math.fabs(x)>0.1:
+                            dir = 'forward ' if x<0 else 'back '
+                            self.publishCommand(dir+str(math.fabs(x)))
+                            rospy.sleep(5)
+                        if math.fabs(y)>0.1:
+                            dir = 'left ' if y<0 else 'right '
+                            self.publishCommand(dir+str(math.fabs(y)))
+                            rospy.loginfo("length="+str(length))
+                            rospy.sleep(5)
+                        # 根据图像估计离地面的距离
+                    self.image_tag_pub.publish(self.bridge_.cv2_to_imgmsg(image_down_cp, encoding='bgr8'))
+            except CvBridgeError as e:
+                print(e)
+            # 每轮均以二维码为中心左右移动100cm以内，每轮结束后上下移动约20cm
+            # 每次移动均调整yaw和pitch进行扫描
+            # 调整高度
+            # self.next_state_ = self.FlightState.DETECTING_TARGET
 
-            if self.flight_state_ == self.FlightState.LANDING:#如果当前状态为“降落”，则处理self.image_down，得到无人机当前位置与apriltag码的相对位置，更新下一次导航信息和飞行状态
-                #...
-                pass
-            self.flight_state_=self.next_state_#更新飞行状态
+        if self.flight_state_ == self.FlightState.LANDING:#如果当前状态为“降落”，则处理self.image_down，得到无人机当前位置与apriltag码的相对位置，更新下一次导航信息和飞行状态
+            #...
+            pass
+        self.flight_state_=self.next_state_#更新飞行状态
 
     # 判断是否检测到目标
     def detectTarget(self):

@@ -18,7 +18,7 @@ import math
 
 from std_msgs.msg import String, Bool
 from geometry_msgs.msg import PoseStamped
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CameraInfo
 
 from cv_bridge import CvBridge, CvBridgeError
 import cv2
@@ -48,9 +48,13 @@ class TestNode:
         # 临时flag，只是想查看传输图像的长宽
         self.temp_flag = True
         self.temp_flag_down = True
+        # 尝试得到相机参数
+        self.caminfo_ = None
+        # 临时flag，每次检测货物，机身仅下降一次
+        self.detect_state = 0
 
         self.flight_state_ = self.FlightState.WAITING#初始飞行状态为“等待”
-        self.navigating_queue_ = deque()  # 存放多段导航信息的队列，队列元素为二元list，list的第一个元素代表导航维度（'x' or 'y' or 'z'），第二个元素代表导航目的地在该维度的坐标
+        self.navigating_queue_ = None#deque()  # 存放多段导航信息的队列，队列元素为二元list，list的第一个元素代表导航维度（'x' or 'y' or 'z'），第二个元素代表导航目的地在该维度的坐标
         self.navigating_dimension_ = None  # 'x' or 'y' or 'z'
         self.navigating_destination_ = None
         self.next_state_ = None  # 完成多段导航后将切换的飞行状态
@@ -66,9 +70,11 @@ class TestNode:
         self.BoolSub_ = rospy.Subscriber('/m3e/cmd_start', Bool, self.startcommandCallback)  # 接收开始飞行的命令
         self.ringPub_ = rospy.Publisher('/m3e/ring', String, queue_size=100)#发布穿过圆环信号
         self.targetPub_ = rospy.Publisher('/m3e/target_result', String, queue_size=100)#发布识别到的货物信号
+        # 尝试获取相机参数
+        self.caminfoSub_ = rospy.Subscriber('iris/usb_cam/camera_info', self.caminfoCallback)
         
         self.image_tag_pub = rospy.Publisher('/get_images/image_result_code',Image,queue_size=10)#发布图像结果
-        self.iamge_circle_pub = rospy.Publisher('/get_images/image_result_circle',Image,queue_size=10)
+        self.image_circle_pub = rospy.Publisher('/get_images/image_result_circle',Image,queue_size=10)
 
         rate = rospy.Rate(0.3)#控制频率
         while not rospy.is_shutdown():
@@ -85,8 +91,14 @@ class TestNode:
             rospy.logwarn('State: WAITING')
             self.publishCommand('takeoff')
             rospy.sleep(5)
-            self.navigating_queue_ = deque([['z', 50]])#将无人机下次移动的目标设为y=1.8
-            self.navigating_queue_ = deque([['x', 300]])
+            self.navigating_queue_ = deque([['z', 40]])#将无人机下次移动的目标设为y=1.8
+            self.navigating_queue_.append(['y', 93])
+            self.navigating_queue_.append(['x', 657])
+            self.navigating_queue_.append(['r', -90])
+            self.navigating_queue_.append(['x', -130])
+            self.navigating_queue_.append(['r', 180])
+            self.navigating_queue_.append(['y', 190])
+            self.navigating_queue_.append(['r', 90])
             self.switchNavigatingState()#调用状态转移函数
             # self.flight_state_=self.FlightState.NAVIGATING#下一个状态为“导航”
 
@@ -103,6 +115,8 @@ class TestNode:
             rospy.logwarn('State: DETECTING_TARGET')
             if self.detectTarget():#如果检测到了货物，发布识别到的货物信号
                 rospy.loginfo('Target detected.')
+                self.navigating_queue_.append(['z', 110])
+                self.detect_state = 0
                 if len(self.target_result_) == 2:#检测完所有货物后，发布识别到的货物信号
                     self.targetPub_.publish(self.target_result_)
                 self.flight_state_=self.FlightState.NAVIGATING#下一个状态为“导航”
@@ -123,12 +137,24 @@ class TestNode:
 
     def Fly(self, next_nav):
         # 根据导航信息发布无人机控制命令
+        dis_dict = {'x': 100, 'y':30, 'z': 20, 'r': 30}
         nav_dict = {'x': ["forward ", "back "],
                     'y': ["left ", "right "],
-                    'z': ["up ", "down "]}
-        # direction = nav_dict[next_nav[0]]
-        self.publishCommand(nav_dict[next_nav[0]][(next_nav[1]>0)*1-1]+str(next_nav[1]))
-        rospy.sleep(5)
+                    'z': ["up ", "down "],
+                    'r': ["ccw", "cw"]}#旋转，逆时针为-顺时针为+，采用degree单位
+        magnitude = next_nav[1].astype(int)
+        direction = nav_dict[next_nav[0]][(magnitude<0)*1]
+        dmove = dis_dict[direction]
+        # 每次只移动dx/dy/dz cm，多余的存回/重新计算，移动后即检查euler是否稳定(符合预期)
+        magnitude = math.fabs(magnitude)
+        while magnitude>dmove:
+            t_begin = rospy.Time.now().to_sec()
+            self.publishCommand(direction+str(dmove))
+            magnitude -= dmove
+            rospy.sleep(int(dmove/10*5))
+            rospy.loginfo("dt="+str(rospy.Time.now().to_sec()-t_begin))
+        self.publishCommand(direction+str(magnitude))
+        rospy.sleep(int(magnitude/10*2))
     
     # 在飞行过程中，更新导航状态和信息
     def switchNavigatingState(self):
@@ -137,8 +163,7 @@ class TestNode:
         if self.flight_state_ == self.FlightState.NAVIGATING:#如果当前状态为“导航”，则处理self.image_，得到无人机当前位置与圆环的相对位置，更新下一次导航信息和飞行状态
         #...
         #假如此时已经穿过了圆环，则发出相应的信号
-            self.ring_num_ = 1
-            # self.ring_num_ = self.ring_num_ + 1
+            self.ring_num_ = self.ring_num_ + 1
         #判断是否已经穿过圆环
             if self.ring_num_ > 0:
                 self.ringPub_.publish('ring '+str(self.ring_num_))
@@ -182,7 +207,15 @@ class TestNode:
                 print(e)
             # 每轮均以二维码为中心左右移动100cm以内，每轮结束后上下移动约20cm
             # 每次移动均调整yaw和pitch进行扫描
+            # (yaw, pitch, roll) = self.R_wu_.as_euler('zyx', degrees=True)
             # 调整高度
+            if self.detect_state==0:#下降
+                self.Fly(['z', -110])
+            elif self.detect_state==1:#逆时针旋转
+                self.Fly(['r', -60])
+            elif self.detect_state==2:#顺时针旋转
+                self.Fly(['r', 120])
+            self.detect_state += 1
             # self.next_state_ = self.FlightState.DETECTING_TARGET
 
         if self.flight_state_ == self.FlightState.LANDING:#如果当前状态为“降落”，则处理self.image_down，得到无人机当前位置与apriltag码的相对位置，更新下一次导航信息和飞行状态
@@ -224,6 +257,7 @@ class TestNode:
                         cv2.circle(image_target, (i[0], i[1]), 2, (125, 125, 125), 3)  # 画圆心
                         #输出圆心的图像坐标和半径
                         rospy.loginfo("( %d , %d ), r= %d", i[0], i[1], i[2])
+                        self.image_circle_pub.publish(self.bridge_.cv2_to_imgmsg(image_target,encoding='bgr8'))
                         #内接正方形像素点求和取平均，查看是否为圆环
                         len_a = int(i[2]/math.sqrt(2))-1
                         inscribed_square = mask[(i[0]-len_a):(i[0]+len_a), (i[1]-len_a):(i[1]+len_a)]
@@ -232,15 +266,15 @@ class TestNode:
                         if occupy_rate>0.7:
                             rospy.logwarn("Detected ball with color \'%s\'~", color)
                 else:
-                    img_zero = np.zeros(np.shape(image_target), dtype=np.uint8)
-                    image_target_res = cv2.add(image_target_rgb, img_zero, mask=mask)#添加掩码
                     #寻找轮廓和外接圆并绘制
                     binaries, contours, hierarchy = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
                     if len(contours)>0:
+                        img_zero = np.zeros(np.shape(image_target), dtype=np.uint8)
+                        image_target_res = cv2.add(image_target_rgb, img_zero, mask=mask)#添加掩码
                         dst = image_target_res.copy()
-                        dst = cv2.drawContours(dst, contours, -1, (125, 125, 125), 8)
+                        dst = cv2.drawContours(dst, contours, -1, (125, 125, 125), 3)
                         (cx, cy), cr = cv2.minEnclosingCircle(contours[0])
-                        dst = cv2.circle(dst, (int(cx), int(cy)), int(cr), (201, 172, 221), 5)
+                        dst = cv2.circle(dst, (int(cx), int(cy)), int(cr), (201, 172, 221), 2)
                         #在空白图上画实心圆
                         enclosing_circle = img_zero.copy()
                         enclosing_circle = cv2.circle(enclosing_circle, (int(cx), int(cy)), int(cr), (255, 255, 255), -1)
@@ -251,6 +285,7 @@ class TestNode:
                         occupy_rate = float(ctarget)/float(cbase)
                         rospy.loginfo("img.shape: "+str(img_res.shape)+", "+str(img_base.shape))
                         rospy.loginfo("%f/%f=%f ", ctarget, cbase, occupy_rate)
+                        self.image_circle_pub.publish(self.bridge_.cv2_to_imgmsg(dst,encoding='bgr8'))
                         #设定阈值，占比大于阈值的很可能是货物
                         if occupy_rate>0.6:
                             rospy.loginfo("Detected ball with color \'%s\'~", color)
@@ -285,7 +320,7 @@ class TestNode:
     def imageCallback(self, msg):
         try:
             if self.temp_flag:
-                rospy.logwarn("CAM_DOWN: H="+str(msg.height)+", W="+str(msg.width))
+                rospy.logwarn("CAM: H="+str(msg.height)+", W="+str(msg.width))
                 self.temp_flag = False
             self.image_ = self.bridge_.imgmsg_to_cv2(msg, 'bgr8')
         except CvBridgeError as err:
@@ -302,6 +337,10 @@ class TestNode:
     # 接收开始信号
     def startcommandCallback(self, msg):
         self.is_begin_ = msg.data
+    # 尝试接受相机参数
+    def caminfoCallback(self, info):
+        self.caminfo_ = {"D": info.D, "K": info.K, "R": info.R, "P": info.P,\
+                         "H": info.height, "W": info.width, "ROI": info.roi}
 
 
 if __name__ == '__main__':

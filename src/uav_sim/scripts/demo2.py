@@ -168,18 +168,13 @@ class TestNode:
                         # 相对图片中心的距离<->相对此时无人机左右偏移二维码的距离(==0)
                         th_LR = 0
                         th_FB = 0
-                        y = -(tag.center[0].astype(int)-(160+th_LR))*60/length # y为左侧, left/right
                         x = -(tag.center[1].astype(int)-(120+th_FB))*60/length # x为前方, forward/back
+                        y = -(tag.center[0].astype(int)-(160+th_LR))*60/length # y为左侧, left/right
                         # 必要时调整位置
                         if math.fabs(x)>0.1:
-                            dir = 'forward ' if x<0 else 'back '
-                            self.publishCommand(dir+str(math.fabs(x)))
-                            rospy.sleep(5)
+                            self.Fly(['x', x])
                         if math.fabs(y)>0.1:
-                            dir = 'left ' if y<0 else 'right '
-                            self.publishCommand(dir+str(math.fabs(y)))
-                            rospy.loginfo("length="+str(length))
-                            rospy.sleep(5)
+                            self.Fly(['y', y])
                         # 根据图像估计离地面的距离
                     self.image_tag_pub.publish(self.bridge_.cv2_to_imgmsg(image_down_cp, encoding='bgr8'))
             except CvBridgeError as e:

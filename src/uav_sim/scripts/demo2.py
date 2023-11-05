@@ -84,7 +84,8 @@ class TestNode:
         if self.flight_state_ == self.FlightState.WAITING:  # 等待裁判机发布开始信号后，起飞
             rospy.logwarn('State: WAITING')
             self.publishCommand('takeoff')
-            self.navigating_queue_ = deque([['z', 2]])#将无人机下次移动的目标设为y=1.8
+            self.navigating_queue_ = deque([['z', 50]])#将无人机下次移动的目标设为y=1.8
+            self.navigating_queue_ = deque([['x', 300]])
             self.switchNavigatingState()#调用状态转移函数
             # self.flight_state_=self.FlightState.NAVIGATING#下一个状态为“导航”
 
@@ -158,12 +159,12 @@ class TestNode:
                 if tags is not None:
                     # 其实应该只能检测到一个
                     if len(tags)>1:
-                        rospy.logwarn(f"TOO MANY TAGS! (DETECTED {len(tags)} TAGS)!")
+                        rospy.logwarn("TOO MANY TAGS! (DETECTED "+str(len(tags))+" TAGS)!")
                     for tag in tags:
                         cv2.circle(image_down_cp, tuple(tag.center.astype(int)), 4, (2, 180, 200), 4)
                         # Apriltag的边长length是相机图像中的像素差?
                         length=tag.corners[1].astype(int)[0]-tag.corners[0].astype(int)[0]
-                        rospy.loginfo(f"Apriltag: length={length}")
+                        rospy.loginfo("Apriltag: length="+str(length))
                         # 相对图片中心的距离<->相对此时无人机左右偏移二维码的距离(==0)
                         th_LR = 0
                         th_FB = 0
@@ -212,7 +213,6 @@ class TestNode:
         for color in color_dict.keys():
             for color_range in color_dict[color]:
                 mask = cv2.inRange(image_hsv, color_range["lower"], color_range["upper"])
-                # plt.imshow(mask), plt.axis("off"), plt.show()
                 img = mask.copy()
                 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (30,30))
                 erosion = cv2.erode(img, kernel, iterations=2)
@@ -227,19 +227,19 @@ class TestNode:
                         cv2.circle(image_target, (i[0], i[1]), i[2], (125, 125, 125), 3)  # 画圆
                         cv2.circle(image_target, (i[0], i[1]), 2, (125, 125, 125), 3)  # 画圆心
                         #输出圆心的图像坐标和半径
-                        print(f"( {i[0]} , {i[1]} ),r= {i[2]}")
+                        rospy.loginfo("( %d , %d ), r= %d", i[0], i[1], i[2])
                         #内接正方形像素点求和取平均，查看是否为圆环
                         len_a = int(i[2]/math.sqrt(2))-1
                         inscribed_square = mask[(i[0]-len_a):(i[0]+len_a), (i[1]-len_a):(i[1]+len_a)]
-                        occupy_rate = sum(sum(inscribed_square/255))/inscribed_square.size
+                        occupy_rate = sum(sum((inscribed_square.astype(int))/255))/inscribed_square.size
                         #设定阈值，占比大于阈值的是球而非圆环
                         if occupy_rate>0.7:
-                            print(f"Detected ball with color \'{color}\'~")
+                            rospy.logwarn("Detected ball with color \'%s\'~", color)
                 else:
                     img_zero = np.zeros(np.shape(image_target), dtype=np.uint8)
                     image_target_res = cv2.add(image_target_rgb, img_zero, mask=mask)#添加掩码
                     #寻找轮廓和外接圆并绘制
-                    contours, hierarchy = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                    binaries, contours, hierarchy = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
                     if len(contours)>0:
                         dst = image_target_res.copy()
                         dst = cv2.drawContours(dst, contours, -1, (125, 125, 125), 8)
@@ -250,14 +250,14 @@ class TestNode:
                         enclosing_circle = cv2.circle(enclosing_circle, (int(cx), int(cy)), int(cr), (255, 255, 255), -1)
                         img_base = enclosing_circle[:,:,0]#都是255所以随便一个维度都行
                         img_res = cv2.add(mask, img_zero[:,:,0], mask=img_base)#添加掩码
-                        cbase = (sum(sum(img_base/255)))
-                        ctarget = (sum(sum(img_res/255)))
-                        occupy_rate = ctarget/cbase
-                        print(f"{img_res.shape}, {img_base.shape}")
-                        print(f"{ctarget}/{cbase}={occupy_rate}")
+                        cbase = (sum(sum(img_base.astype(int)/255)))
+                        ctarget = (sum(sum(img_res.astype(int)/255)))
+                        occupy_rate = float(ctarget)/float(cbase)
+                        rospy.loginfo("img.shape: "+str(img_res.shape)+", "+str(img_base.shape))
+                        rospy.loginfo("%f/%f=%f ", ctarget, cbase, occupy_rate)
                         #设定阈值，占比大于阈值的很可能是货物
                         if occupy_rate>0.6:
-                            print(f"Detected ball with color \'{color}\'~")
+                            rospy.loginfo("Detected ball with color \'%s\'~", color)
                         else:
                             pass
         #若检测到了货物，则发布识别到的货物信号,例如识别到了红色和黄色小球，则发布“ry”
@@ -289,7 +289,7 @@ class TestNode:
     def imageCallback(self, msg):
         try:
             if self.temp_flag:
-                rospy.logwarn(f"CAM_DOWN: H={msg.height}, W={msg.width}")
+                rospy.logwarn("CAM_DOWN: H="+str(msg.height)+", W="+str(msg.width))
                 self.temp_flag = False
             self.image_ = self.bridge_.imgmsg_to_cv2(msg, 'bgr8')
         except CvBridgeError as err:
@@ -298,7 +298,7 @@ class TestNode:
     def imageCallback_down(self,msg):
         try:
             if self.temp_flag_down:
-                rospy.logwarn(f"CAM_DOWN: H={msg.height}, W={msg.width}")
+                rospy.logwarn("CAM_DOWN: H="+str(msg.height)+", W="+str(msg.width))
                 self.temp_flag_down = False
             self.image_down = self.bridge_.imgmsg_to_cv2(msg, 'bgr8')
         except CvBridgeError as err:

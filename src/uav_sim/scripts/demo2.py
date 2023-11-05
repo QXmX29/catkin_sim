@@ -84,6 +84,7 @@ class TestNode:
         if self.flight_state_ == self.FlightState.WAITING:  # 等待裁判机发布开始信号后，起飞
             rospy.logwarn('State: WAITING')
             self.publishCommand('takeoff')
+            rospy.sleep(5)
             self.navigating_queue_ = deque([['z', 50]])#将无人机下次移动的目标设为y=1.8
             self.navigating_queue_ = deque([['x', 300]])
             self.switchNavigatingState()#调用状态转移函数

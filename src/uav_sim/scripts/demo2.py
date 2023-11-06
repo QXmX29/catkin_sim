@@ -45,13 +45,21 @@ class TestNode:
         self.image_ = None#前视相机图像
         self.image_down = None#下视相机图像
         self.bridge_ = CvBridge()#图像转换
-        # 临时flag，只是想查看传输图像的长宽
+        # 临时flag，只是想查看传输图像的长宽/相机参数
         self.temp_flag = True
         self.temp_flag_down = True
+        self.temp_flag_cam = True
         # 尝试得到相机参数
         self.caminfo_ = None
         # 临时flag，每次检测货物，机身仅下降一次
         self.detect_state = 0
+        # 飞行控制参数
+        self.min_dis_dict = {'x': 20, 'y': 20, 'z': 20, 'r': 1}
+        self.max_dis_dict = {'x': 500, 'y': 500, 'z': 500, 'r': 360}
+        self.nav_dict = {'x': ["back ", "forward "],
+                    'y': ["left ", "right "],
+                    'z': ["down ", "up "],
+                    'r': ["ccw", "cw"]}#旋转，逆时针为-顺时针为+，采用degree单位
 
         self.flight_state_ = self.FlightState.WAITING#初始飞行状态为“等待”
         self.navigating_queue_ = None#deque()  # 存放多段导航信息的队列，队列元素为二元list，list的第一个元素代表导航维度（'x' or 'y' or 'z'），第二个元素代表导航目的地在该维度的坐标
@@ -71,7 +79,7 @@ class TestNode:
         self.ringPub_ = rospy.Publisher('/m3e/ring', String, queue_size=100)#发布穿过圆环信号
         self.targetPub_ = rospy.Publisher('/m3e/target_result', String, queue_size=100)#发布识别到的货物信号
         # 尝试获取相机参数
-        self.caminfoSub_ = rospy.Subscriber('iris/usb_cam/camera_info', self.caminfoCallback)
+        self.caminfoSub_ = rospy.Subscriber('/iris/usb_cam/camera_info', CameraInfo, self.caminfoCallback)
         
         self.image_tag_pub = rospy.Publisher('/get_images/image_result_code',Image,queue_size=10)#发布图像结果
         self.image_circle_pub = rospy.Publisher('/get_images/image_result_circle',Image,queue_size=10)
@@ -89,13 +97,15 @@ class TestNode:
     def decision(self):
         if self.flight_state_ == self.FlightState.WAITING:  # 等待裁判机发布开始信号后，起飞
             rospy.logwarn('State: WAITING')
+            rospy.sleep(1.5)
             self.publishCommand('takeoff')
-            rospy.sleep(5)
-            self.navigating_queue_ = deque([['z', 40]])#将无人机下次移动的目标设为y=1.8
-            self.navigating_queue_.append(['y', 93])
-            self.navigating_queue_.append(['x', 657])
+            rospy.loginfo("Take off!")
+            rospy.sleep(4)
+            self.navigating_queue_ = deque([['z', 100]])#将无人机下次移动的目标设为y=1.8
+            self.navigating_queue_.append(['y', -120])
+            self.navigating_queue_.append(['x', 700])
             self.navigating_queue_.append(['r', -90])
-            self.navigating_queue_.append(['x', -130])
+            self.navigating_queue_.append(['x', 130])
             self.navigating_queue_.append(['r', 180])
             self.navigating_queue_.append(['y', 190])
             self.navigating_queue_.append(['r', 90])
@@ -137,24 +147,63 @@ class TestNode:
 
     def Fly(self, next_nav):
         # 根据导航信息发布无人机控制命令
-        dis_dict = {'x': 100, 'y':30, 'z': 20, 'r': 30}
-        nav_dict = {'x': ["forward ", "back "],
-                    'y': ["left ", "right "],
-                    'z': ["up ", "down "],
-                    'r': ["ccw", "cw"]}#旋转，逆时针为-顺时针为+，采用degree单位
-        magnitude = next_nav[1].astype(int)
-        direction = nav_dict[next_nav[0]][(magnitude<0)*1]
-        dmove = dis_dict[direction]
+        magnitude = next_nav[1]
+        if magnitude==0:
+            self.publishCommand("stop")
+            return
+        direction = self.nav_dict[next_nav[0]][(magnitude>0)*1]
+        dmove = self.max_dis_dict[next_nav[0]]
         # 每次只移动dx/dy/dz cm，多余的存回/重新计算，移动后即检查euler是否稳定(符合预期)
-        magnitude = math.fabs(magnitude)
+        magnitude = int(round(math.fabs(magnitude)))
         while magnitude>dmove:
+            t_begin = rospy.Time.now().to_sec()
+            if next_nav[0]!='r':
+                # 规定走直角路线，每次都要规范yaw
+                self.Adjust()
+            rospy.loginfo("dt_adjust="+str(rospy.Time.now().to_sec()-t_begin))
             t_begin = rospy.Time.now().to_sec()
             self.publishCommand(direction+str(dmove))
             magnitude -= dmove
-            rospy.sleep(int(dmove/10*5))
-            rospy.loginfo("dt="+str(rospy.Time.now().to_sec()-t_begin))
-        self.publishCommand(direction+str(magnitude))
-        rospy.sleep(int(magnitude/10*2))
+            rospy.sleep(max(1.5, float(dmove/10)))
+            rospy.loginfo("dt_dmove="+str(rospy.Time.now().to_sec()-t_begin))
+        if magnitude<self.min_dis_dict[next_nav[0]]:
+            self.publishCommand(self.nav_dict[next_nav[0]][(magnitude<0)*1]\
+                                + str(self.min_dis_dict[next_nav[0]]))
+            rospy.sleep(max(1.5, float(self.min_dis_dict[next_nav[0]]/10)))
+            self.publishCommand(direction+str(int(self.min_dis_dict[next_nav[0]]+magnitude)))
+            rospy.sleep(max(1.5, float(self.min_dis_dict[next_nav[0]]+magnitude)))
+        else:
+            self.publishCommand(direction+str(magnitude))
+        rospy.sleep(max(1.5, float(magnitude/10)))
+    
+    def Adjust(self):
+        adjusted = False
+        while not adjusted:
+            (yaw, pitch, roll) = self.R_wu_.as_euler('zyx', degrees=True)
+            if math.fabs(yaw%90)>4:
+                rospy.loginfo("Adjust yaw (from yaw="+str(yaw)+" to dest="+str(round(yaw/90)*90))
+                d_yaw = -(round(yaw/90)*90 - yaw)
+                adjust = self.nav_dict['r'][(d_yaw>0)*1]
+                drot = self.max_dis_dict['r']
+                d_yaw = int(round(math.fabs(d_yaw))+2)
+                while d_yaw>drot:
+                    self.publishCommand(adjust+str(drot))
+                    rospy.sleep(max(1.5, float(drot/10)))
+                    d_yaw -= drot
+                if d_yaw<self.min_dis_dict['r']:
+                    self.publishCommand(self.nav_dict['r'][(d_yaw<0)*1]\
+                                        +str(self.min_dis_dict['r']))
+                    rospy.sleep(max(1.5, float(drot/10)))
+                    self.publishCommand(adjust+str(self.min_dis_dict['r']+d_yaw))
+                    rospy.sleep(max(1.5, float((self.min_dis_dict['r']+d_yaw)/10)))
+                else:
+                    self.publishCommand(adjust+str(d_yaw))
+                    rospy.sleep(max(1.5, int(round(d_yaw/10))))
+            else:
+                adjusted = True
+        # 悬停的同时应该可以调整好pitch和roll
+        self.publishCommand("stop")
+        rospy.sleep(0.2)
     
     # 在飞行过程中，更新导航状态和信息
     def switchNavigatingState(self):
@@ -174,6 +223,7 @@ class TestNode:
                 if self.ring_num_== 5:
                     self.next_state_ = self.FlightState.LANDING
         if self.flight_state_ == self.FlightState.DETECTING_TARGET:#如果当前状态为“识别货物”，则采取一定策略进行移动，更新下一次导航信息和飞行状态
+            self.Fly(['r', 0])#stop
             # 策略1.0: 利用下视摄像头瞄准二维码，上下左右移动配合机身旋转进行扫描
             try:
                 # 检测二维码
@@ -225,6 +275,7 @@ class TestNode:
 
     # 判断是否检测到目标
     def detectTarget(self):
+        self.Fly(['r', 0])#stop
         #版本2.0: 一次性判断，无坐标追踪&反复确认
         if self.image_ is None:
             return False
@@ -259,7 +310,7 @@ class TestNode:
                         rospy.loginfo("( %d , %d ), r= %d", i[0], i[1], i[2])
                         self.image_circle_pub.publish(self.bridge_.cv2_to_imgmsg(image_target,encoding='bgr8'))
                         #内接正方形像素点求和取平均，查看是否为圆环
-                        len_a = int(i[2]/math.sqrt(2))-1
+                        len_a = round(i[2]/math.sqrt(2))-1
                         inscribed_square = mask[(i[0]-len_a):(i[0]+len_a), (i[1]-len_a):(i[1]+len_a)]
                         occupy_rate = sum(sum((inscribed_square.astype(int))/255))/inscribed_square.size
                         #设定阈值，占比大于阈值的是球而非圆环
@@ -341,6 +392,10 @@ class TestNode:
     def caminfoCallback(self, info):
         self.caminfo_ = {"D": info.D, "K": info.K, "R": info.R, "P": info.P,\
                          "H": info.height, "W": info.width, "ROI": info.roi}
+        if self.temp_flag_cam:
+            rospy.logwarn("CAM_INFO: "+str(self.caminfo_))
+            rospy.loginfo(str(info))
+            self.temp_flag_cam = False
 
 
 if __name__ == '__main__':

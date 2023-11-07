@@ -37,20 +37,18 @@ class TestNode:
     def __init__(self):
         rospy.init_node('Test_node', anonymous=True)
         rospy.logwarn('Test node set up.')
-
+        
         # 无人机在世界坐标系下的位姿
         self.R_wu_ = R.from_quat([0, 0, 0, 1])
         self.t_wu_ = np.zeros([3], dtype=np.float64)
 
         self.image_ = None#前视相机图像
-        self.image_down = None#下视相机图像
+        self.imageSub_down = None#下视相机图像
         self.bridge_ = CvBridge()#图像转换
         # 临时flag，只是想查看传输图像的长宽/相机参数
         self.temp_flag = True
         self.temp_flag_down = True
         self.temp_flag_cam = True
-        # 尝试得到相机参数
-        self.caminfo_ = None
         # 临时flag，每次检测货物，机身仅下降一次
         self.detect_state = 0
         # 飞行控制参数
@@ -71,21 +69,20 @@ class TestNode:
         self.ring_num_ = 0#穿过的圆环编号
         self.target_result_ = None#识别到的货物
 
-        self.commandPub_ = rospy.Publisher('/m3e/cmd_string', String, queue_size=100)  # 发布无人机控制信号
+        self.publishCommand_ = rospy.Publisher('/m3e/cmd_string', String, queue_size=100)  # 发布无人机控制信号
         self.poseSub_ = rospy.Subscriber('/m3e/states', PoseStamped, self.poseCallback)  # 接收处理无人机位姿信息，只允许使用姿态信息
-        self.imageSub_ = rospy.Subscriber('/iris/usb_cam/image_raw', Image, self.imageCallback)  # 接收前视摄像头图像
-        self.imageSub_down = rospy.Subscriber('/iris/usb_cam_down/image_raw', Image, self.imageCallback_down)  # 接收下视摄像头图像
+        self.imageSub_ = rospy.Subscriber('/iris/usb_cam/image_raw', Image, self.imageCallback)  # 接收下视摄像头图像
+        self.imageSub_down = rospy.Subscriber('/iris/usb_cam_down/image_raw', Image, self.imageCallback_down)  # 接收下视摄像头图像       
         self.BoolSub_ = rospy.Subscriber('/m3e/cmd_start', Bool, self.startcommandCallback)  # 接收开始飞行的命令
         self.ringPub_ = rospy.Publisher('/m3e/ring', String, queue_size=100)#发布穿过圆环信号
         self.targetPub_ = rospy.Publisher('/m3e/target_result', String, queue_size=100)#发布识别到的货物信号
-        # 尝试获取相机参数
-        self.caminfoSub_ = rospy.Subscriber('/iris/usb_cam/camera_info', CameraInfo, self.caminfoCallback)
+        self.cameraSub = rospy.Subscriber('/iris/usb_cam/camera_info', CameraInfo, self.camera_info_callback) # 相机内参信号
         
         self.image_tag_pub = rospy.Publisher('/get_images/image_result_code',Image,queue_size=10)#发布图像结果
         self.image_circle_pub = rospy.Publisher('/get_images/image_result_circle',Image,queue_size=10)
 
         #test:修改
-        
+
         rate = rospy.Rate(0.3)#控制频率
         while not rospy.is_shutdown():
             if self.is_begin_:#发布开始信号后，开始进行决策
@@ -147,72 +144,16 @@ class TestNode:
         else:
             pass
 
-    def Fly(self, next_nav):
-        # 根据导航信息发布无人机控制命令
-        magnitude = next_nav[1]
-        if magnitude==0:
-            self.publishCommand("stop")
-            return
-        direction = self.nav_dict[next_nav[0]][(magnitude>0)*1]
-        dmove = self.max_dis_dict[next_nav[0]]
-        # 每次只移动dx/dy/dz cm，多余的存回/重新计算，移动后即检查euler是否稳定(符合预期)
-        magnitude = int(round(math.fabs(magnitude)))
-        while magnitude>dmove:
-            t_begin = rospy.Time.now().to_sec()
-            if next_nav[0]!='r':
-                # 规定走直角路线，每次都要规范yaw
-                self.Adjust()
-            rospy.loginfo("dt_adjust="+str(rospy.Time.now().to_sec()-t_begin))
-            t_begin = rospy.Time.now().to_sec()
-            self.publishCommand(direction+str(dmove))
-            magnitude -= dmove
-            rospy.sleep(max(1.5, float(dmove/10)))
-            rospy.loginfo("dt_dmove="+str(rospy.Time.now().to_sec()-t_begin))
-        if magnitude<self.min_dis_dict[next_nav[0]]:
-            self.publishCommand(self.nav_dict[next_nav[0]][(magnitude<0)*1]\
-                                + str(self.min_dis_dict[next_nav[0]]))
-            rospy.sleep(max(1.5, float(self.min_dis_dict[next_nav[0]]/10)))
-            self.publishCommand(direction+str(int(self.min_dis_dict[next_nav[0]]+magnitude)))
-            rospy.sleep(max(1.5, float(self.min_dis_dict[next_nav[0]]+magnitude)))
-        else:
-            self.publishCommand(direction+str(magnitude))
-        rospy.sleep(max(1.5, float(magnitude/10)))
-    
-    def Adjust(self):
-        adjusted = False
-        while not adjusted:
-            (yaw, pitch, roll) = self.R_wu_.as_euler('zyx', degrees=True)
-            if math.fabs(yaw%90)>4:
-                rospy.loginfo("Adjust yaw (from yaw="+str(yaw)+" to dest="+str(round(yaw/90)*90))
-                d_yaw = -(round(yaw/90)*90 - yaw)
-                adjust = self.nav_dict['r'][(d_yaw>0)*1]
-                drot = self.max_dis_dict['r']
-                d_yaw = int(round(math.fabs(d_yaw))+2)
-                while d_yaw>drot:
-                    self.publishCommand(adjust+str(drot))
-                    rospy.sleep(max(1.5, float(drot/10)))
-                    d_yaw -= drot
-                if d_yaw<self.min_dis_dict['r']:
-                    self.publishCommand(self.nav_dict['r'][(d_yaw<0)*1]\
-                                        +str(self.min_dis_dict['r']))
-                    rospy.sleep(max(1.5, float(drot/10)))
-                    self.publishCommand(adjust+str(self.min_dis_dict['r']+d_yaw))
-                    rospy.sleep(max(1.5, float((self.min_dis_dict['r']+d_yaw)/10)))
-                else:
-                    self.publishCommand(adjust+str(d_yaw))
-                    rospy.sleep(max(1.5, int(round(d_yaw/10))))
-            else:
-                adjusted = True
-        # 悬停的同时应该可以调整好pitch和roll
-        self.publishCommand("stop")
-        rospy.sleep(0.2)
-    
     # 在飞行过程中，更新导航状态和信息
     def switchNavigatingState(self):
         if self.flight_state_ == self.FlightState.WAITING:
             self.next_state_ = self.FlightState.NAVIGATING
         if self.flight_state_ == self.FlightState.NAVIGATING:#如果当前状态为“导航”，则处理self.image_，得到无人机当前位置与圆环的相对位置，更新下一次导航信息和飞行状态
-        #...
+            
+        # self.navigating_xyr = np.array([(i[0] - self.camera_info[0]) / i[2] * 70, \
+        #                                 (i[1] - self.camera_info[1]) / i[2] * 70, \
+        #                                  i[2]])
+
         #假如此时已经穿过了圆环，则发出相应的信号
             self.ring_num_ = self.ring_num_ + 1
         #判断是否已经穿过圆环
@@ -229,7 +170,7 @@ class TestNode:
             # 策略1.0: 利用下视摄像头瞄准二维码，上下左右移动配合机身旋转进行扫描
             try:
                 # 检测二维码
-                image_down_cp = self.image_down.copy()
+                image_down_cp = self.image_down_.copy()
                 image_down_gray = cv2.cvtColor(image_down_cp, cv2.COLOR_BGR2GRAY)#转换为灰度图
                 image_down_g = cv2.GaussianBlur(image_down_gray, (3, 3), 0)#滤波
                 at_detector = apriltag.Detector(apriltag.DetectorOptions(families='tag36h11 tag25h9'))
@@ -246,6 +187,9 @@ class TestNode:
                         # 相对图片中心的距离<->相对此时无人机左右偏移二维码的距离(==0)
                         th_LR = 0
                         th_FB = 0
+                        # 根据相机参数修改
+                        # x=(tag.center[0].astype(int)-self.camera_info[0])*75/length
+                        # y=(tag.center[1].astype(int)-self.camera_info[1])*75/length
                         x = -(tag.center[1].astype(int)-(120+th_FB))*60/length # x为前方, forward/back
                         y = -(tag.center[0].astype(int)-(160+th_LR))*60/length # y为左侧, left/right
                         # 必要时调整位置
@@ -357,8 +301,87 @@ class TestNode:
         else:
             return False
 
+    #飞行函数
+    def Fly(self, next_nav):
+        # 根据导航信息发布无人机控制命令
+        magnitude = next_nav[1]
+        if magnitude==0:
+            self.publishCommand("stop")
+            return
+        direction = self.nav_dict[next_nav[0]][(magnitude>0)*1]
+        dmove = self.max_dis_dict[next_nav[0]]
+        # 每次只移动dx/dy/dz cm，多余的存回/重新计算，移动后即检查euler是否稳定(符合预期)
+        magnitude = int(round(math.fabs(magnitude)))
+        while magnitude>dmove:
+            t_begin = rospy.Time.now().to_sec()
+            if next_nav[0]!='r':
+                # 规定走直角路线，每次都要规范yaw
+                self.Adjust()
+            rospy.loginfo("dt_adjust="+str(rospy.Time.now().to_sec()-t_begin))
+            t_begin = rospy.Time.now().to_sec()
+            self.publishCommand(direction+str(dmove))
+            magnitude -= dmove
+            rospy.sleep(max(1.5, float(dmove/10)))
+            rospy.loginfo("dt_dmove="+str(rospy.Time.now().to_sec()-t_begin))
+        if magnitude<self.min_dis_dict[next_nav[0]]:
+            self.publishCommand(self.nav_dict[next_nav[0]][(magnitude<0)*1]\
+                                + str(self.min_dis_dict[next_nav[0]]))
+            rospy.sleep(max(1.5, float(self.min_dis_dict[next_nav[0]]/10)))
+            self.publishCommand(direction+str(int(self.min_dis_dict[next_nav[0]]+magnitude)))
+            rospy.sleep(max(1.5, float(self.min_dis_dict[next_nav[0]]+magnitude)))
+        else:
+            self.publishCommand(direction+str(magnitude))
+        rospy.sleep(max(1.5, float(magnitude/10)))
+    
+    def Adjust(self):
+        adjusted = False
+        while not adjusted:
+            (yaw, pitch, roll) = self.R_wu_.as_euler('zyx', degrees=True)
+            # 以下这段换到另一处全程控制或
+            if self.ring_num_ == 2: # 穿过了俩圆环，开始转弯
+                theta = 90
+            elif self.ring_num_ < 3:# 前两个圆环方向为x正
+                theta = 0
+            elif self.ring_num_ == 3:
+                theta = 180
+            d_yaw = -(theta - yaw) # 最近的直角角度为round(yaw/90)*90
+            if math.fabs(d_yaw)>10:
+                rospy.loginfo("Adjust yaw (from yaw="+str(yaw)+" to dest="+str(theta))
+                adjust = self.nav_dict['r'][(d_yaw>0)*1]
+                d_yaw = int(round(math.fabs(d_yaw)))
+                d_yaw = int(max(d_yaw, self.max_dis_dict['r']))
+                # drot = self.max_dis_dict['r']
+                # while d_yaw>drot:
+                #     self.publishCommand(adjust+str(drot))
+                #     rospy.sleep(max(1.5, float(drot/10)))
+                #     d_yaw -= drot
+                self.publishCommand(adjust+str(d_yaw))
+                rospy.sleep(max(1.5, int(round(d_yaw/10))))
+            else:
+                adjusted = True
+        # 悬停的同时应该可以调整好pitch和roll
+        self.publishCommand("stop")
+        rospy.sleep(0.2)
 
-
+    def imageCallback(self, msg):
+        try:
+            # 接收前视相机图像
+            if self.temp_flag:
+                rospy.logwarn("CAM: H="+str(msg.height)+", W="+str(msg.width))
+                self.temp_flag = False
+            self.image_ = self.bridge_.imgmsg_to_cv2(msg, 'bgr8')
+        except CvBridgeError as err:
+            print(err)
+    
+    def imageCallback_down(self,msg):
+        try:
+            # 接受下视相机图像
+            if self.temp_flag_down:
+                rospy.logwarn("CAM_DOWN: H="+str(msg.height)+", W="+str(msg.width))
+                self.temp_flag_down = False
+            self.image_down_ = self.bridge_.imgmsg_to_cv2(msg, 'bgr8')
+        except CvBridgeError as err:
+            print(err)
     # 向相关topic发布无人机控制命令
     def publishCommand(self, command_str):
         msg = String()
@@ -369,39 +392,11 @@ class TestNode:
         self.t_wu_ = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])
         self.R_wu_ = R.from_quat([msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z, msg.pose.orientation.w])
         pass
-    # 接收前视相机图像
-    def imageCallback(self, msg):
-        try:
-            if self.temp_flag:
-                rospy.logwarn("CAM: H="+str(msg.height)+", W="+str(msg.width))
-                self.temp_flag = False
-            self.image_ = self.bridge_.imgmsg_to_cv2(msg, 'bgr8')
-        except CvBridgeError as err:
-            print(err)
-    #接受下视相机图像
-    def imageCallback_down(self,msg):
-        try:
-            if self.temp_flag_down:
-                rospy.logwarn("CAM_DOWN: H="+str(msg.height)+", W="+str(msg.width))
-                self.temp_flag_down = False
-            self.image_down = self.bridge_.imgmsg_to_cv2(msg, 'bgr8')
-        except CvBridgeError as err:
-            print(err)
     # 接收开始信号
     def startcommandCallback(self, msg):
         self.is_begin_ = msg.data
-    # 尝试接受相机参数
-    def caminfoCallback(self, info):
-        self.caminfo_ = {"D": info.D, "K": info.K, "R": info.R, "P": info.P,\
-                         "H": info.height, "W": info.width, "ROI": info.roi}
-        if self.temp_flag_cam:
-            rospy.logwarn("CAM_INFO: "+str(self.caminfo_))
-            rospy.loginfo(str(info))
-            self.temp_flag_cam = False
-
 
 if __name__ == '__main__':
     cn = TestNode()
-
 
 

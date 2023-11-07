@@ -39,34 +39,34 @@ class TestNode:
         # 无人机在世界坐标系下的位姿
         self.R_wu_ = R.from_quat([0, 0, 0, 1])
         self.t_wu_ = np.zeros([3], dtype=np.float64)
-
+        
         self.image_ = None#前视相机图像
         self.imageSub_down = None#下视相机图像
         self.bridge_ = CvBridge()#图像转换
-
+        
         self.flight_state_ = self.FlightState.WAITING#初始飞行状态为“等待”
-        self.navigating_queue_ = deque()  # 存放多段导航信息的队列，队列元素为二元list，list的第一个元素代表导航维度（'x' or 'y' or 'z'），第二个元素代表导航目的地在该维度的坐标
+        self.navigating_queue_ = None#deque()  # 存放多段导航信息的队列，队列元素为二元list，list的第一个元素代表导航维度（'x' or 'y' or 'z'），第二个元素代表导航目的地在该维度的坐标
         self.navigating_dimension_ = None  # 'x' or 'y' or 'z'
         self.navigating_destination_ = None
         self.navigating_xyr = None
         self.navigating_xy = None
         self.next_state_ = None  # 完成多段导航后将切换的飞行状态
         self.fly_state = None
-
+        
         self.is_begin_ = False#由裁判机发布的开始信号
         self.ring_num_ = 0#穿过的圆环编号
         self.target_result_ = None#识别到的货物
         self.camera_info = None #相机内参
-
-        self.publishCommand_ = rospy.Publisher('/m3e/cmd_string', String, queue_size=100)  # 发布无人机控制信号
+        
+        self.commandPub_ = rospy.Publisher('/m3e/cmd_string', String, queue_size=100)  # 发布无人机控制信号
         self.poseSub_ = rospy.Subscriber('/m3e/states', PoseStamped, self.poseCallback)  # 接收处理无人机位姿信息，只允许使用姿态信息
-        self.imageSub_ = rospy.Subscriber('/iris/usb_cam/image_raw', Image, self.imageCallback)  # 接收下视摄像头图像
+        self.imageSub_ = rospy.Subscriber('/iris/usb_cam/image_raw', Image, self.imageCallback)  # 接收前视摄像头图像
         self.imageSub_down = rospy.Subscriber('/iris/usb_cam_down/image_raw', Image, self.imageCallback_down)  # 接收下视摄像头图像       
         self.BoolSub_ = rospy.Subscriber('/m3e/cmd_start', Bool, self.startcommandCallback)  # 接收开始飞行的命令
         self.ringPub_ = rospy.Publisher('/m3e/ring', String, queue_size=100)#发布穿过圆环信号
         self.targetPub_ = rospy.Publisher('/m3e/target_result', String, queue_size=100)#发布识别到的货物信号
         self.cameraSub = rospy.Subscriber('/iris/usb_cam/camera_info', CameraInfo, self.camera_info_callback) # 相机内参信号
-
+        
         rate = rospy.Rate(0.3)#控制频率
         while not rospy.is_shutdown():
             if self.is_begin_:#发布开始信号后，开始进行决策
@@ -75,7 +75,7 @@ class TestNode:
                 break
             rate.sleep()
         rospy.logwarn('Test node shut down.')
-
+    
     # 按照一定频率，根据无人机的不同状态进行决策，并发布无人机控制信号
     def decision(self):
         if self.flight_state_ == self.FlightState.WAITING:  # 等待裁判机发布开始信号后，起飞

@@ -13,13 +13,15 @@ from scipy.spatial.transform import Rotation as R
 from collections import deque
 from enum import Enum
 import rospy
-import cv2
 import numpy as np
 import math
+
 from std_msgs.msg import String, Bool
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import Image, CameraInfo
+
 from cv_bridge import CvBridge, CvBridgeError
+import cv2
 import apriltag
 
 class TestNode:
@@ -82,15 +84,12 @@ class TestNode:
             self.navigating_queue_ = deque([['y', 1.8]])#将无人机下次移动的目标设为y=1.8
             self.switchNavigatingState()#调用状态转移函数
             self.flight_state_=self.FlightState.NAVIGATING#下一个状态为“导航”
-
-
-
+        
         elif self.flight_state_ == self.FlightState.NAVIGATING:#无人机根据视觉定位导航飞行
             rospy.logwarn('State: NAVIGATING')
             #根据导航信息发布无人机控制命令
             self.switchNavigatingState()#调用状态转移函数
-
-
+        
         elif self.flight_state_ == self.FlightState.DETECTING_TARGET:#无人机来到货架前，识别货物
             rospy.logwarn('State: DETECTING_TARGET')
             if self.detectTarget():#如果检测到了货物，发布识别到的货物信号
@@ -100,9 +99,7 @@ class TestNode:
                 self.flight_state_=self.FlightState.NAVIGATING#下一个状态为“导航”
             else:#若没有检测到货物，则采取一定的策略，继续寻找货物
                 self.switchNavigatingState()
-                pass
-
-
+        
         elif self.flight_state_ == self.FlightState.LANDING:#无人机穿过第五个圆环，开始降落
             rospy.logwarn('State: LANDING')
             #根据导航信息发布无人机控制命令
@@ -110,38 +107,36 @@ class TestNode:
             #假如此时已经调整到指定位置，则降落
             self.publishCommand('land')
             self.flight_state_=self.FlightState.LANDED#此时无人机已经成功降落
-            
+        
         else:
             pass
-
+    
     # 在飞行过程中，更新导航状态和信息
     def switchNavigatingState(self):
-             # 从队列头部取出无人机下一次导航的状态信息
-            # next_nav = self.navigating_queue_.popleft()
-            if self.flight_state_ == self.FlightState.NAVIGATING:#如果当前状态为“导航”，则处理self.image_，得到无人机当前位置与圆环的相对位置，更新下一次导航信息和飞行状态
-                self.fly_state = 'ring'
-                if self.ring_num_ == 2:
-                    self.fly_w()
-                self.fly_p()
-            #假如此时已经穿过了圆环，则发出相应的信号
-                self.ring_num_ = self.ring_num_ + 1
-            #判断是否已经穿过圆环
-                if self.ring_num_ > 0:
-                    self.ringPub_.publish('ring '+str(self.ring_num_))
-                    self.next_state_=self.FlightState.NAVIGATING
-            #如果穿过了第一个或第四个圆环，则下一个状态为“识别货物”
-                    if self.ring_num_ == 1 or self.ring_num_ ==4 :
-                        self.next_state_ = self.FlightState.DETECTING_TARGET
-                    if self.ring_num_== 5:
-                        self.next_state_ = self.FlightState.LANDING
-            if self.flight_state_ == self.FlightState.DETECTING_TARGET:#如果当前状态为“识别货物”，则采取一定策略进行移动，更新下一次导航信息和飞行状态
-                #...
-                pass
-
-            if self.flight_state_ == self.FlightState.LANDING:#如果当前状态为“降落”，则处理self.image_down，得到无人机当前位置与apriltag码的相对位置，更新下一次导航信息和飞行状态
-                self.fly_state = 'apriltag'
-                self.fly_p()
-            self.flight_state_=self.next_state_#更新飞行状态
+            # 从队列头部取出无人机下一次导航的状态信息
+        # next_nav = self.navigating_queue_.popleft()
+        if self.flight_state_ == self.FlightState.NAVIGATING:#如果当前状态为“导航”，则处理self.image_，得到无人机当前位置与圆环的相对位置，更新下一次导航信息和飞行状态
+            self.fly_state = 'ring'
+            if self.ring_num_ == 2:
+                self.fly_w()
+            self.fly_p()
+        #假如此时已经穿过了圆环，则发出相应的信号
+            self.ring_num_ = self.ring_num_ + 1
+        #判断是否已经穿过圆环
+            if self.ring_num_ > 0:
+                self.ringPub_.publish('ring '+str(self.ring_num_))
+                self.next_state_=self.FlightState.NAVIGATING
+        #如果穿过了第一个或第四个圆环，则下一个状态为“识别货物”
+                if self.ring_num_ == 1 or self.ring_num_ ==4 :
+                    self.next_state_ = self.FlightState.DETECTING_TARGET
+                if self.ring_num_== 5:
+                    self.next_state_ = self.FlightState.LANDING
+        if self.flight_state_ == self.FlightState.DETECTING_TARGET:#如果当前状态为“识别货物”，则采取一定策略进行移动，更新下一次导航信息和飞行状态
+            pass
+        if self.flight_state_ == self.FlightState.LANDING:#如果当前状态为“降落”，则处理self.image_down，得到无人机当前位置与apriltag码的相对位置，更新下一次导航信息和飞行状态
+            self.fly_state = 'apriltag'
+            self.fly_p()
+        self.flight_state_=self.next_state_#更新飞行状态
 
     # 判断是否检测到目标
     def detectTarget(self):
@@ -153,11 +148,10 @@ class TestNode:
         #若检测到了货物，则发布识别到的货物信号,例如识别到了红色和黄色小球，则发布“ry”
         if self.ring_num_==1:
             self.target_result_='y'
-        if self.ring_num_==4:
+        elif self.ring_num_==4:
           self.target_result_='yr'
         return True
         #若没有检测到货物，则返回False
-        return False
 
     #飞行函数
     def fly_p(self):
@@ -312,7 +306,7 @@ class TestNode:
     def publishCommand(self, command_str):
         msg = String()
         msg.data = command_str
-        self.self.publishCommand_.publish(msg)
+        self.commandPub_.publish(msg)
     # 接收无人机位姿 本课程只允许使用姿态信息
     def poseCallback(self, msg):
         self.t_wu_ = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])
@@ -327,5 +321,3 @@ class TestNode:
 
 if __name__ == '__main__':
     cn = TestNode()
-
-

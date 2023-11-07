@@ -69,9 +69,9 @@ class TestNode:
         self.ring_num_ = 0#穿过的圆环编号
         self.target_result_ = None#识别到的货物
 
-        self.publishCommand_ = rospy.Publisher('/m3e/cmd_string', String, queue_size=100)  # 发布无人机控制信号
+        self.commandPub_ = rospy.Publisher('/m3e/cmd_string', String, queue_size=100)  # 发布无人机控制信号
         self.poseSub_ = rospy.Subscriber('/m3e/states', PoseStamped, self.poseCallback)  # 接收处理无人机位姿信息，只允许使用姿态信息
-        self.imageSub_ = rospy.Subscriber('/iris/usb_cam/image_raw', Image, self.imageCallback)  # 接收下视摄像头图像
+        self.imageSub_ = rospy.Subscriber('/iris/usb_cam/image_raw', Image, self.imageCallback)  # 接收前视摄像头图像
         self.imageSub_down = rospy.Subscriber('/iris/usb_cam_down/image_raw', Image, self.imageCallback_down)  # 接收下视摄像头图像       
         self.BoolSub_ = rospy.Subscriber('/m3e/cmd_start', Bool, self.startcommandCallback)  # 接收开始飞行的命令
         self.ringPub_ = rospy.Publisher('/m3e/ring', String, queue_size=100)#发布穿过圆环信号
@@ -363,22 +363,16 @@ class TestNode:
         self.publishCommand("stop")
         rospy.sleep(0.2)
 
+    # 接收前视相机图像
     def imageCallback(self, msg):
         try:
-            # 接收前视相机图像
-            if self.temp_flag:
-                rospy.logwarn("CAM: H="+str(msg.height)+", W="+str(msg.width))
-                self.temp_flag = False
             self.image_ = self.bridge_.imgmsg_to_cv2(msg, 'bgr8')
         except CvBridgeError as err:
             print(err)
     
+    # 接受下视相机图像
     def imageCallback_down(self,msg):
         try:
-            # 接受下视相机图像
-            if self.temp_flag_down:
-                rospy.logwarn("CAM_DOWN: H="+str(msg.height)+", W="+str(msg.width))
-                self.temp_flag_down = False
             self.image_down_ = self.bridge_.imgmsg_to_cv2(msg, 'bgr8')
         except CvBridgeError as err:
             print(err)
@@ -395,6 +389,9 @@ class TestNode:
     # 接收开始信号
     def startcommandCallback(self, msg):
         self.is_begin_ = msg.data
+    # 接收相机内参
+    def camera_info_callback(self, msg):
+        self.camera_info = [msg.K[2], msg.K[5]]
 
 if __name__ == '__main__':
     cn = TestNode()

@@ -25,7 +25,6 @@ import cv2
 import apriltag
 import random
 
-
 class TestNode:
     class FlightState(Enum):  # 飞行状态
         WAITING = 1
@@ -45,10 +44,7 @@ class TestNode:
         self.image_ = None#前视相机图像
         self.imageSub_down = None#下视相机图像
         self.bridge_ = CvBridge()#图像转换
-        # 临时flag，只是想查看传输图像的长宽/相机参数
-        self.temp_flag = True
-        self.temp_flag_down = True
-        self.temp_flag_cam = True
+        
         # 临时flag，每次检测货物，机身仅下降一次
         self.detect_state = 0
         # 飞行控制参数
@@ -81,8 +77,6 @@ class TestNode:
         self.image_tag_pub = rospy.Publisher('/get_images/image_result_code',Image,queue_size=10)#发布图像结果
         self.image_circle_pub = rospy.Publisher('/get_images/image_result_circle',Image,queue_size=10)
 
-        #test:修改
-
         rate = rospy.Rate(0.3)#控制频率
         while not rospy.is_shutdown():
             if self.is_begin_:#发布开始信号后，开始进行决策
@@ -91,7 +85,7 @@ class TestNode:
                 break
             rate.sleep()
         rospy.logwarn('Test node shut down.')
-
+    
     # 按照一定频率，根据无人机的不同状态进行决策，并发布无人机控制信号
     def decision(self):
         if self.flight_state_ == self.FlightState.WAITING:  # 等待裁判机发布开始信号后，起飞
@@ -110,16 +104,14 @@ class TestNode:
             self.navigating_queue_.append(['r', 90])
             self.switchNavigatingState()#调用状态转移函数
             # self.flight_state_=self.FlightState.NAVIGATING#下一个状态为“导航”
-
-
+        
         elif self.flight_state_ == self.FlightState.NAVIGATING:#无人机根据视觉定位导航飞行
             rospy.logwarn('State: NAVIGATING')
             while len(self.navigating_queue_)>0:
                 next_nav = self.navigating_queue_.popleft()# 从队列头部取出无人机下一次导航的状态信息
                 self.Fly(next_nav)
             self.switchNavigatingState()#调用状态转移函数
-
-
+        
         elif self.flight_state_ == self.FlightState.DETECTING_TARGET:#无人机来到货架前，识别货物
             rospy.logwarn('State: DETECTING_TARGET')
             if self.detectTarget():#如果检测到了货物，发布识别到的货物信号
@@ -131,8 +123,7 @@ class TestNode:
                 self.flight_state_=self.FlightState.NAVIGATING#下一个状态为“导航”
             else:#若没有检测到货物，则采取一定的策略，继续寻找货物
                 self.switchNavigatingState()
-
-
+        
         elif self.flight_state_ == self.FlightState.LANDING:#无人机穿过第五个圆环，开始降落
             rospy.logwarn('State: LANDING')
             #根据导航信息发布无人机控制命令
@@ -140,10 +131,10 @@ class TestNode:
             #假如此时已经调整到指定位置，则降落
             self.publishCommand('land')
             self.flight_state_=self.FlightState.LANDED#此时无人机已经成功降落
-            
+        
         else:
             pass
-
+    
     # 在飞行过程中，更新导航状态和信息
     def switchNavigatingState(self):
         if self.flight_state_ == self.FlightState.WAITING:
@@ -213,10 +204,11 @@ class TestNode:
                 self.Fly(['r', 120])
             self.detect_state += 1
             # self.next_state_ = self.FlightState.DETECTING_TARGET
-
+        
         if self.flight_state_ == self.FlightState.LANDING:#如果当前状态为“降落”，则处理self.image_down，得到无人机当前位置与apriltag码的相对位置，更新下一次导航信息和飞行状态
             #...
             pass
+        
         self.flight_state_=self.next_state_#更新飞行状态
 
     # 判断是否检测到目标
@@ -300,7 +292,7 @@ class TestNode:
         #若没有检测到货物，则返回False
         else:
             return False
-
+    
     #飞行函数
     def Fly(self, next_nav):
         # 根据导航信息发布无人机控制命令
@@ -362,14 +354,13 @@ class TestNode:
         # 悬停的同时应该可以调整好pitch和roll
         self.publishCommand("stop")
         rospy.sleep(0.2)
-
+    
     # 接收前视相机图像
     def imageCallback(self, msg):
         try:
             self.image_ = self.bridge_.imgmsg_to_cv2(msg, 'bgr8')
         except CvBridgeError as err:
             print(err)
-    
     # 接受下视相机图像
     def imageCallback_down(self,msg):
         try:
@@ -395,5 +386,3 @@ class TestNode:
 
 if __name__ == '__main__':
     cn = TestNode()
-
-

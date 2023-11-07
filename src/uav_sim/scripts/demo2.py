@@ -101,7 +101,7 @@ class TestNode:
             self.publishCommand('takeoff')
             rospy.loginfo("Take off!")
             rospy.sleep(4)
-            self.navigating_queue_ = deque([['z', 100]])#将无人机下次移动的目标设为y=1.8
+            self.navigating_queue_ = deque([['z', 100]])
             self.navigating_queue_.append(['y', -120])
             self.navigating_queue_.append(['x', 700])
             self.navigating_queue_.append(['r', -90])

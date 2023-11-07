@@ -84,6 +84,8 @@ class TestNode:
         self.image_tag_pub = rospy.Publisher('/get_images/image_result_code',Image,queue_size=10)#发布图像结果
         self.image_circle_pub = rospy.Publisher('/get_images/image_result_circle',Image,queue_size=10)
 
+        #test:修改
+        
         rate = rospy.Rate(0.3)#控制频率
         while not rospy.is_shutdown():
             if self.is_begin_:#发布开始信号后，开始进行决策

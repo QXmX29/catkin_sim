@@ -166,7 +166,10 @@ class TestNode:
             self.Adjust()
             # 检测圆环位置: 借助圆半径估计位置, 阈值100或许可以根据相机参数和圆环参数等微调
             cr = self.detectCircle()
-            if cr<0:    # 未检测到圆环
+            if cr<0:    # 未检测到圆环或出现异常
+                # 异常值：-10为找不到图像；-2为疑似未起飞()；-1为检测不到圆，可能是转弯失败或偏离过大
+                if cr==-2:
+                    self.next_state_ = self.FlightState.WAITING
                 pass
             if cr<100:  # 试探性地前进; 可能需要修改以应对穿环中/穿环后检测到其他圆环的情况
                 self.navigating_queue_.append(['x', 100])
@@ -284,8 +287,9 @@ class TestNode:
     
     # 检测圆环位置并计算导航信息
     def detectCircle(self):    # 返回圆环半径(图像)
+        # 图像出错，返回异常值-3
         if self.image_ is None:
-            return False
+            return -3
         image_circle = self.image_.copy()
         #处理前视相机图像，检测圆环(也可能是货物)，这里先利用了黄色过滤
         image_circle_rgb = cv2.cvtColor(image_circle, cv2.COLOR_BGR2RGB)
@@ -308,23 +312,39 @@ class TestNode:
                     cv2.circle(image_circle, (i[0], i[1]), 2, (125, 125, 125), 2)       # 画圆心
                     #输出圆心的图像坐标和半径
                     rospy.loginfo("( %d , %d ), r= %d", i[0], i[1], i[2])
-                    if i[2]> cinfo[2]:
-                        cinfo = i
-                    # 过滤掉一些距离较远的圆环
-                    else:
+                    y = (i[0] - self.camera_info[0]) / i[2] * 35    # 图像x轴(左-右+), 实际y方向(左-右+)
+                    z = -(i[1] - self.camera_info[1]) / i[2] * 35   # 图像y轴(下+上-), 实际z方向(下-上+)
+                    # 如果左右距离过远还是需要排除…
+                    if math.fabs(y)>120:
                         pass
+                    # 如果上下距离过远,是不是没起飞? 或者上升不够?
+                    elif math.fabs(z)>100:
+                        # 还没穿过一个圆环, 说明刚才可能起飞失败了! 返回异常值-2
+                        if self.ring_num_==0:
+                            return -2
+                        # 其他情况另作考虑，比如刚经过圆环2或4、检测货物后没飞起来?
+                        else:
+                            pass
+                    else:
+                        # 过滤掉其他距离较远的圆环?
+                        if i[2]> cinfo[2]:
+                            cinfo = np.array([y, z, i[2]])
+                        else:
+                            pass
                 # 如果检测发现是货物,其实可以直接到detectTarget了(×) 但最好想清楚以防重复检测
                 else:
                     pass
             cv2.circle(image_circle, (cinfo[0], cinfo[1]), cinfo[2], (0, 0, 255), 4)    # 画圆
             cv2.circle(image_circle, (cinfo[0], cinfo[1]), 2, (0, 0, 255), 3)           # 画圆心
             self.image_circle_pub.publish(self.bridge_.cv2_to_imgmsg(image_circle,encoding='bgr8'))
-            y = (cinfo[0] - self.camera_info[0]) / cinfo[2] * 35    # 图像x轴(左-右+), 实际y方向(左-右+)
-            z = -(cinfo[1] - self.camera_info[1]) / cinfo[2] * 35   # 图像y轴(下+上-), 实际z方向(下-上+)
+            # y = (cinfo[0] - self.camera_info[0]) / cinfo[2] * 35    # 图像x轴(左-右+), 实际y方向(左-右+)
+            # z = -(cinfo[1] - self.camera_info[1]) / cinfo[2] * 35   # 图像y轴(下+上-), 实际z方向(下-上+)
+            y = cinfo[0], z = cinfo[1]
             rospy.loginfo("Circle: (LR, DU) = (dy, dz) = ( %d , %d )(move), r = %d (image)", y, z, cinfo[2])
             self.navigating_queue_.append(['y', y])
             self.navigating_queue_.append(['z', z])
             return cinfo[2]
+        # 未检测到圆环，返回异常值-1; 可能的情况: 转弯失败或转弯后左右方向偏离较大
         else:
             return -1
     

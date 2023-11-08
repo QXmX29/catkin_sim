@@ -56,7 +56,7 @@ class TestNode:
         self.detect_state = 0   # 检测货物: 0机身下降; 1逆时针; 2顺时针
         self.theta = 0  # yaw角度控制: 0 --> 90 --> 180
         # 移动距离、货物颜色阈值参数
-        self.min_dis_dict = {'x': 20, 'y': 20, 'z': 20, 'r': 1}
+        self.min_dis_dict = {'x': 20, 'y': 20, 'z': 20, 'r': 10}
         self.max_dis_dict = {'x': 500, 'y': 500, 'z': 500, 'r': 360}
         self.nav_dict = {'x': ["back ", "forward "],
                          'y': ["left ", "right "],
@@ -98,8 +98,10 @@ class TestNode:
     # 按照一定频率，根据无人机的不同状态进行决策，并发布无人机控制信号
     def decision(self):
         # 处理上次 switch 中可能传来的导航信息: 穿环前进;检测货物前降落
+        rospy.logwarn("[Decision] new round: navigate")
         while len(self.navigating_queue_)>0:
             next_nav = self.navigating_queue_.popleft()
+            rospy.loginfo("next_nav: "+str(next_nav))
             self.Fly(next_nav)
         
         if self.flight_state_ == self.FlightState.WAITING:  # 等待裁判机发布开始信号后，起飞
@@ -154,7 +156,6 @@ class TestNode:
     # 在飞行过程中，更新导航状态和信息
     def switchNavigatingState(self):
         if self.flight_state_ == self.FlightState.WAITING:
-            rospy.logwarn("[switch-waiting] Hey! this can't be approached!")
             self.next_state_ = self.FlightState.NAVIGATING
         if self.flight_state_ == self.FlightState.NAVIGATING:#如果当前状态为“导航”，则处理self.image_，得到无人机当前位置与圆环的相对位置，更新下一次导航信息和飞行状态
             # 可能需要先检测二维码，以保证距离合适
@@ -262,10 +263,10 @@ class TestNode:
         # 空白图上绘制检测的圆(实心)
         enclosing_circle = img_zero.copy()
         enclosing_circle = cv2.circle(enclosing_circle, (circle[0], circle[1]), circle[2], (255, 255, 255), -1)
-        img_base = enclosing_circle[:,:,0]  # 都是255所以随便一个维度都行
+        img_base = enclosing_circle # 这里mask只有两个维度即xy，没有RGB维度
         # 借助检测的圆从原图掩码中抠出检测出的部分
         image_res = image_mask.copy()
-        img_res = cv2.add(image_res, img_zero[:,:,0], mask=img_base)#添加掩码
+        img_res = cv2.add(image_res, img_zero, mask=img_base)#添加掩码
         # 分别计算面积(像素和)
         cbase = (sum(sum(img_base.astype(int)/255)))
         ctarget = (sum(sum(img_res.astype(int)/255)))
@@ -289,7 +290,7 @@ class TestNode:
         #处理前视相机图像，检测圆环(也可能是货物)，这里先利用了黄色过滤
         image_circle_rgb = cv2.cvtColor(image_circle, cv2.COLOR_BGR2RGB)
         image_hsv = cv2.cvtColor(image_circle_rgb, cv2.COLOR_RGB2HSV)
-        color_range = self.color_dict['y']
+        color_range = self.color_dict['y'][0]
         mask = cv2.inRange(image_hsv, color_range["lower"], color_range["upper"])
         # 霍夫圆检测
         # image_gray = cv2.cvtColor(image_circle, cv2.COLOR_BGR2GRAY)
@@ -315,11 +316,12 @@ class TestNode:
                 # 如果检测发现是货物,其实可以直接到detectTarget了(×) 但最好想清楚以防重复检测
                 else:
                     pass
-            cv2.circle(image_circle, (cinfo[0], i[1]), cinfo[2], (0, 0, 255), 4)    # 画圆
-            cv2.circle(image_circle, (cinfo[0], i[1]), 2, (0, 0, 255), 3)           # 画圆心
+            cv2.circle(image_circle, (cinfo[0], cinfo[1]), cinfo[2], (0, 0, 255), 4)    # 画圆
+            cv2.circle(image_circle, (cinfo[0], cinfo[1]), 2, (0, 0, 255), 3)           # 画圆心
             self.image_circle_pub.publish(self.bridge_.cv2_to_imgmsg(image_circle,encoding='bgr8'))
-            y = (cinfo[0] - self.camera_info[0]) / cinfo[2] * 70    # 图像x轴(左-右+), 实际y方向(左-右+)
-            z = -(cinfo[1] - self.camera_info[1]) / cinfo[2] * 70   # 图像y轴(下+上-), 实际z方向(下-上+)
+            y = (cinfo[0] - self.camera_info[0]) / cinfo[2] * 35    # 图像x轴(左-右+), 实际y方向(左-右+)
+            z = -(cinfo[1] - self.camera_info[1]) / cinfo[2] * 35   # 图像y轴(下+上-), 实际z方向(下-上+)
+            rospy.loginfo("Circle: (LR, DU) = (dy, dz) = ( %d , %d )(move), r = %d (image)", y, z, cinfo[2])
             self.navigating_queue_.append(['y', y])
             self.navigating_queue_.append(['z', z])
             return cinfo[2]

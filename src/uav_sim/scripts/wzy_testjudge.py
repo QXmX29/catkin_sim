@@ -28,10 +28,15 @@ import random
 class TestNode:
     class FlightState(Enum):  # 飞行状态
         WAITING = 1
-        NAVIGATING = 2
+        NAVIGATING_1 = 2
         DETECTING_TARGET = 3
         LANDING = 4
         LANDED = 5
+        NAVIGATING_2 = 6
+        NAVIGATING_3 = 7
+        NAVIGATING_4 = 8
+        NAVIGATING_5 = 9
+
 
     def __init__(self):
         rospy.init_node('Test_node', anonymous=True)
@@ -46,6 +51,7 @@ class TestNode:
         self.image_ = None#前视相机图像
         self.imageSub_down = None#下视相机图像
         self.bridge_ = CvBridge()#图像转换
+        self.layer = 0 #货架状态
         
         # 飞机状态控制变量
         self.flight_state_ = self.FlightState.WAITING#初始飞行状态为“等待”
@@ -56,7 +62,7 @@ class TestNode:
         self.detect_state = 0   # 检测货物: 0机身下降; 1逆时针; 2顺时针
         self.theta = 0  # yaw角度控制: 0 --> 90 --> 180
         # 移动距离、货物颜色阈值参数
-        self.min_dis_dict = {'x': 20, 'y': 20, 'z': 20, 'r': 10}
+        self.min_dis_dict = {'x': 10, 'y': 10, 'z': 10, 'r': 10}
         self.max_dis_dict = {'x': 500, 'y': 500, 'z': 500, 'r': 360}
         self.nav_dict = {'x': ["back ", "forward "],
                          'y': ["left ", "right "],
@@ -110,16 +116,15 @@ class TestNode:
         
         if self.flight_state_ == self.FlightState.WAITING:  # 等待裁判机发布开始信号后，起飞
             rospy.logwarn('State: WAITING')
-            rospy.sleep(1.5)
+            rospy.sleep(5)
             self.publishCommand('takeoff')
             rospy.loginfo("Take off!")
-            rospy.sleep(2)
-            # 起飞后可能需要根据仿真情况调整上下高度?
-            # self.navigating_queue_.append(['z', 20])
-            self.next_state_ = self.FlightState.NAVIGATING
+            rospy.sleep(4)
+            #self.Fly(['x', 50])
+            self.next_state_ = self.FlightState.NAVIGATING_1
         
-        elif self.flight_state_ == self.FlightState.NAVIGATING:#无人机根据视觉定位导航飞行
-            rospy.logwarn('State: NAVIGATING')
+        elif self.flight_state_ == self.FlightState.NAVIGATING_1:#无人机根据视觉定位导航飞行
+            rospy.logwarn('State: NAVIGATING_1')
             # 调用状态转移函数
         
         elif self.flight_state_ == self.FlightState.DETECTING_TARGET:#无人机来到货架前，识别货物
@@ -131,6 +136,7 @@ class TestNode:
                 # 检测到货物后无人机上升，并重置detect_state(=0)以便下次检测货物
                 self.navigating_queue_.append(['z', 110])
                 self.detect_state = 0
+                self.layer = 0
                 # 检测完所有货物后，发布识别到的货物信号
                 if len(self.target_result_) == 2:
                     self.targetPub_.publish(self.target_result_)
@@ -149,9 +155,16 @@ class TestNode:
                 self.flight_state_=self.FlightState.LANDED#此时无人机已经成功降落
             # 否则只尝试下降一段距离
             else:
-                self.navigating_queue_.append(['z', -80])
+                self.Fly(['z', -80])
             LAND -= 1
-        
+        elif self.flight_state_ == self.FlightState.NAVIGATING_3: #无人机开始穿第三个环
+            rospy.logwarn('State: NAVIGATING_3')
+        elif self.flight_state_ == self.FlightState.NAVIGATING_4: 
+            rospy.logwarn('State: NAVIGATING_4')
+        elif self.flight_state_ == self.FlightState.NAVIGATING_5: 
+            rospy.logwarn('State: NAVIGATING_5')
+        elif self.flight_state_ == self.FlightState.NAVIGATING_2: 
+            rospy.logwarn('State: NAVIGATING_2')
         else:
             pass
         
@@ -160,59 +173,106 @@ class TestNode:
     # 在飞行过程中，更新导航状态和信息
     def switchNavigatingState(self):
         if self.flight_state_ == self.FlightState.WAITING:
-            self.next_state_ = self.FlightState.NAVIGATING
-        if self.flight_state_ == self.FlightState.NAVIGATING:#如果当前状态为“导航”，则处理self.image_，得到无人机当前位置与圆环的相对位置，更新下一次导航信息和飞行状态
-            # 可能需要先检测二维码，以保证距离合适
-            distance = self.detectApriltag()
-            # 好吧，起飞阶段莫得二维码
-            if distance<200:
-                pass    # 考虑在距离过短时适当上升
-            # 然后需要调整位姿
+            self.next_state_ = self.FlightState.NAVIGATING_1
+        if self.flight_state_ == self.FlightState.NAVIGATING_1:#如果当前状态为“导航”，则处理self.image_，得到无人机当前位置与圆环的相对位置，更新下一次导航信息和飞行状态
             self.Adjust()
             # 检测圆环位置: 借助圆半径估计位置, 阈值100或许可以根据相机参数和圆环参数等微调
             cr = self.detectCircle()
-            if cr<0:    # 未检测到圆环或出现异常
-                # 异常值：-1为找不到图像；-2为检测不到圆；-3未为疑似未起飞()；-4为没有合适的圆
-                if cr==-3:
-                    self.next_state_ = self.FlightState.WAITING
-                # 检测不到圆，可能高度不够（或离得太近）
-                elif cr==-2:
-                    pass
-                else:
-                    pass
+            rospy.loginfo(cr)
+            while cr < 0:
+                self.Fly(['x', -50])
+                self.Adjust()
+                cr = self.detectCircle()
+                rospy.loginfo(cr)
             # (调试)如果cr过小，是不是检测到远处的圆环了?
-            elif cr<30:
+            if cr<30:
                 rospy.loginfo("[switch-Navigating] cr="+str(cr))
-            elif cr<100:  # 试探性地前进; 可能需要修改以应对穿环中/穿环后检测到其他圆环的情况
-                self.navigating_queue_.append(['x', 100])
             else:
-                # 距离合适，尝试前进(200可能需要结合cr和相机参数等修改)
-                self.navigating_queue_.append(['x', 200])
+                # 距离可能合适，尝试前进
+                dis_ = (self.camera_info[2]+self.camera_info[3])/2*35/cr
+                self.Fly(['x', int(dis_+180)])
                 # 假如此时已经穿过了圆环，则发出相应的信号
                 self.ring_num_ = self.ring_num_ + 1
             # 判断是否已经穿过圆环
             if self.ring_num_ > 0:
                 self.ringPub_.publish('ring '+str(self.ring_num_))
-                # self.next_state_=self.FlightState.NAVIGATING
-                # 如果闯过第二或第三个圆环，则需要转弯
-                if self.ring_num_ == 2 or self.ring_num_ == 3 :
-                    self.theta = 90*(self.ring_num_-1)
-                # 如果穿过了第一个或第四个圆环，则下一个状态为“识别货物”
-                if self.ring_num_ == 1 or self.ring_num_ == 4 :
-                    self.next_state_ = self.FlightState.DETECTING_TARGET
-                # 最后一个圆环即可降落
-                if self.ring_num_== 5:
-                    self.next_state_ = self.FlightState.LANDING
+                self.next_state_ = self.FlightState.NAVIGATING_2
+        if self.flight_state_ == self.FlightState.NAVIGATING_2:
+            dis = self.detectApriltag(1)
+            while dis == 0:
+                self.Fly(['z',40])
+            if dis < 230 or dis > 250:
+                self.Fly(['z', 235-dis])
+            dis = self.detectApriltag(1)
+            while dis == 0:
+                self.Fly(['z',40])
+            if dis < 230 or dis > 250:
+                self.Fly(['z', 240-dis])
+            self.Fly(['x', 200])
+            self.ring_num_ += 1
+            self.ringPub_.publish('ring '+str(self.ring_num_))
+            self.next_state_ = self.FlightState.NAVIGATING_3
+        if self.flight_state_ == self.FlightState.NAVIGATING_3:
+            self.Fly(['z', -120])
+            self.Fly(['y', 100])
+            self.Fly(['x', 100])
+            self.Fly(['r', -40])
+            self.theta = 45
+            self.Fly(['r', -40])
+            self.theta = 90
+            self.Fly(['y', 100])
+            dis = self.detectApriltag(1)
+            while dis == 0:
+                self.Fly(['z',40])
+            if dis < 230 or dis > 250:
+                self.Fly(['z', 240-dis])
+            self.Fly(['x', -50])
+            dis = self.detectApriltag(1)
+            while dis == 0:
+                self.Fly(['z',40])
+            if dis < 230 or dis > 250:
+                self.Fly(['z', 240-dis])
+            self.Fly(['x', -50])
+            # 检测圆环位置
+            cr = self.detectCircle()
+            rospy.loginfo(cr)
+            while cr < 0:
+                self.Fly(['x', -50])
+                self.Adjust()
+                cr = self.detectCircle()
+                rospy.loginfo(cr)
+            # (调试)如果cr过小，是不是检测到远处的圆环了?
+            if cr<30:
+                rospy.loginfo("[switch-Navigating] cr="+str(cr))
+            else:
+                # 距离可能合适，尝试前进
+                dis_ = (self.camera_info[2]+self.camera_info[3])/2*35/cr
+                self.Fly(['x', int(dis_+100)])
+                # 假如此时已经穿过了圆环，则发出相应的信号
+                self.ring_num_ = self.ring_num_ + 1
+            # 判断是否已经穿过圆环
+            if self.ring_num_ > 0:
+                self.ringPub_.publish('ring '+str(self.ring_num_))
+                self.next_state_ = self.FlightState.NAVIGATING_4
         if self.flight_state_ == self.FlightState.DETECTING_TARGET:#如果当前状态为“识别货物”，则采取一定策略进行移动，更新下一次导航信息和飞行状态
             # 策略1.0: 利用下视摄像头瞄准二维码，上下移动配合机身旋转进行扫描
             # 检测二维码并对准
             self.Fly(['r', 0])  # stop
             distance = self.detectApriltag() # 可能可以用到距离二维码的距离
             # 如果距离过大可能需要检查是否下降
-            if distance > 100:
+            if distance > 100 and self.layer == 0:
                 self.detect_state = 1
                 self.navigating_queue_.append(['z', int(round(80-distance))])
                 rospy.logwarn("[DetectTarget] distance="+str(distance)+", is command lost?")
+            elif self.layer == 1:
+                if distance > 120:
+                    self.detect_state = 1
+                    self.navigating_queue_.append(['z', int(round(100-distance))])
+                    rospy.logwarn("[DetectTarget] distance="+str(distance)+", is command lost?")
+                elif distance < 90:
+                    self.detect_state = 1
+                    self.navigating_queue_.append(['z', int(round(100-distance))])
+                    rospy.logwarn("[DetectTarget] distance="+str(distance)+", is command lost?")
             # 调整 yaw 进行扫描
             else:
                 if self.detect_state==1:#逆时针旋转
@@ -220,9 +280,11 @@ class TestNode:
                 elif self.detect_state==2:#顺时针旋转
                     self.navigating_queue_.append(['r', 120])
                 else:   # 0-down-x-1
-                    pass
+                    self.layer = 1 
+                    self.detect_state = 0
+                    self.Adjust()
                 self.detect_state += 1
-            # self.next_state_ = self.FlightState.DETECTING_TARGET
+            self.next_state_ = self.FlightState.DETECTING_TARGET
         
         if self.flight_state_ == self.FlightState.LANDING:#如果当前状态为“降落”，则处理self.image_down，得到无人机当前位置与apriltag码的相对位置，更新下一次导航信息和飞行状态
             distance = self.detectApriltag()
@@ -230,8 +292,9 @@ class TestNode:
         self.flight_state_=self.next_state_#更新飞行状态
 
     # 检测二维码并估计距离
-    def detectApriltag(self):
-        try:
+    def detectApriltag(self, num):
+        dis = 0
+        for i in range(num):
             image_down_cp = self.image_down_.copy()
             image_down_gray = cv2.cvtColor(image_down_cp, cv2.COLOR_BGR2GRAY)#转换为灰度图
             image_down_g = cv2.GaussianBlur(image_down_gray, (3, 3), 0)#滤波
@@ -243,33 +306,24 @@ class TestNode:
                     rospy.logwarn("TOO MANY TAGS! (DETECTED "+str(len(tags))+" TAGS)!")
                 for tag in tags:
                     cv2.circle(image_down_cp, tuple(tag.center.astype(int)), 4, (2, 180, 200), 4)
-                    # Apriltag的边长length是相机图像中的像素差?
+                    # Apriltag的边长length是相机图像中的像素差
                     length=tag.corners[1].astype(int)[0]-tag.corners[0].astype(int)[0]
                     # rospy.loginfo("Apriltag: length="+str(length))
                     # 根据相机参数修改
-                    y = (tag.center[0].astype(int)-self.camera_info[0])/length*75   # y为左侧, left-/right+
+                    y = -(tag.center[0].astype(int)-self.camera_info[0])/length*75   # y为左侧, left-/right+
                     x = -(tag.center[1].astype(int)-self.camera_info[1])/length*75  # x为前方, back-/forward+
-                    # 相对图片中心的距离<->相对此时无人机左右偏移二维码的距离(==0)
-                    # th_LR = 0
-                    # th_FB = 0
-                    # x = -(tag.center[1].astype(int)-(120+th_FB))*60/length
-                    # y = -(tag.center[0].astype(int)-(160+th_LR))*60/length
-                    # 必要时调整位置
-                    if math.fabs(y)>0.1:
-                        self.navigating_queue_.append(['y', y])
-                    if math.fabs(x)>0.1:
-                        self.navigating_queue_.append(['x', x])
-                    # 根据图像估计离地面的距离
                     (yaw, pitch, roll) = self.R_wu_.as_euler('zyx', degrees=True)
-                    if math.fabs(pitch)<2 and math.fabs(roll)<2:
-                        # 认为误差足够小，所以尝试估算距离；可能需要用到相机焦距等参数
-                        return -1
+                    # 必要时调整位置
+                    # if math.fabs(y) < 200 and math.fabs(x) < 200 and math.fabs(pitch)<2 and math.fabs(roll)<2:
+                    #    return 0
+                    if math.fabs(y)>100:
+                        self.Fly(['y', int(y/8)])
+                    elif math.fabs(x)>150:
+                        self.Fly(['x', int(x/10)])
+                    dis = (self.camera_info[2]+self.camera_info[3])/2*75/length
                 self.image_down = image_down_cp
                 # self.image_tag_pub.publish(self.bridge_.cv2_to_imgmsg(image_down_cp, encoding='bgr8'))
-            return -1
-        except CvBridgeError as e:
-            print(e)
-            return -1
+        return dis
     
     # 区分是货物还是圆环
     def isTarget(self, image_mask, circle):
@@ -331,7 +385,7 @@ class TestNode:
         else:
             return None
         self.image_forward = dst
-        # self.image_circle_pub.publish(self.bridge_.cv2_to_imgmsg(dst,encoding='bgr8'))
+        self.image_circle_pub.publish(self.bridge_.cv2_to_imgmsg(dst,encoding='bgr8'))
         # 找不到合适的边界或检测(圆环)失败
         if len(circles)>0:
             return circles
@@ -339,7 +393,7 @@ class TestNode:
             return None
     
     # 检测圆环位置并计算导航信息
-    def detectCircle(self):    # 返回圆环半径(图像)
+    def detectCircle_(self):    # 返回圆环半径(图像)
         # 图像出错，返回异常值-1
         if self.image_ is None:
             return -1
@@ -383,23 +437,25 @@ class TestNode:
                     if not self.isTarget(image_mask=mask, circle=i):
                         cv2.circle(image_circle, (i[0], i[1]), i[2], (125, 125, 125), 2)    # 画圆
                         cv2.circle(image_circle, (i[0], i[1]), 2, (125, 125, 125), 2)       # 画圆心
-                        y = (i[0] - self.camera_info[0]) / i[2] * 35    # 图像x轴(左-右+), 实际y方向(左-右+)
+                        y = -(i[0] - self.camera_info[0]) / i[2] * 35    # 图像x轴(左-右+), 实际y方向(左-右+)
                         z = -(i[1] - self.camera_info[1]) / i[2] * 35   # 图像y轴(下+上-), 实际z方向(下-上+)
                         #输出圆心的图像坐标和半径; 输出相对距离
                         rospy.loginfo("( %d , %d ), r= %d; y_LR=%f, z_DU=%f", i[0], i[1], i[2], y, z)
                         # 如果左右距离过远还是需要排除…
-                        if math.fabs(y)>120:
+                        if math.fabs(y)>60:
                             rospy.loginfo("Too far! right or left")
+                            self.navigating_queue_.append(['y', int(y/2)])
                         # 如果上下距离过远,是不是没起飞? 或者上升不够?
                         if math.fabs(z)>60:
                             rospy.loginfo("Too high/low! up or down")
                             # 还没穿过一个圆环, 说明刚才可能起飞失败了! 返回异常值-3
-                            self.navigating_queue_.append(['z', int(z)])
-                            if self.ring_num_==0:
-                                return -3
+
+                            self.navigating_queue_.append(['z', int(z/2)])
+                            # if self.ring_num_==0:
+                            #    return -3
                             # 其他情况另作考虑，比如刚经过圆环2或4、检测货物后没飞起来?
-                            else:
-                                pass
+                            # else:
+                            #    pass
                         # 上下左右距离没啥问题, 再看半径是否符合要求(前后距离)
                         elif i[2]>cinfo[2]:
                             cinfo = np.array([y, z, i[2]]).astype(int)
@@ -437,7 +493,57 @@ class TestNode:
                 return -2
         # 未检测到合适的圆环，返回异常值-4
         return -4
+    def detectCircle(self):
+        cr = 0
+        for i in range(1):
+            # 图像出错，返回异常值-1
+            if self.image_ is None:
+                return -1
+            image_circle = self.image_.copy()
+            #处理前视相机图像，检测圆环(也可能是货物)，这里先利用了黄色过滤
+            image_circle_rgb = cv2.cvtColor(image_circle, cv2.COLOR_BGR2RGB)
+            image_hsv = cv2.cvtColor(image_circle_rgb, cv2.COLOR_RGB2HSV)
+            color_range = self.color_dict['y'][0]
+            mask = cv2.inRange(image_hsv, color_range["lower"], color_range["upper"])
+            # 霍夫圆检测
+            # image_gray = cv2.cvtColor(image_circle, cv2.COLOR_BGR2GRAY)
+            image_g = cv2.GaussianBlur(mask, (3, 3), 0)#滤波
+            circles = cv2.HoughCircles(image_g, cv2.HOUGH_GRADIENT, 1, 100, param1=80, param2=40, minRadius=20, maxRadius=150)  #霍夫圆检测
+
+            max_radius = 0
+            max_circle = None
+            # 取最大的
+            if circles is not None:
+                for i in circles[0,:]:
+                    if i[2] > max_radius:
+                        max_radius = i[2]
+                        max_circle = i
+                
+                if max_circle is not None:
+                    # 只绘制最大半径的圆环
+                    cv2.circle(image_circle, (max_circle[0], max_circle[1]), max_circle[2], (255, 0, 0), 3)  
+                    cv2.circle(image_circle, (max_circle[0], max_circle[1]), 2, (255, 0, 0), 3)
+                    y = -(max_circle[0] - self.camera_info[0]) / max_circle[2] * 35    # 图像x轴(左-右+), 实际y方向(左-右+)
+                    z = -(max_circle[1] - self.camera_info[1]) / max_circle[2] * 35   # 图像y轴(下+上-), 实际z方向(下-上+)
+                    cr = max_circle[2]
+                    #输出圆心的图像坐标和半径; 输出相对距离
+                    rospy.loginfo("max circle: (%d, %d) r=%d", max_circle[0], max_circle[1], max_circle[2])
+                    # 更新navigation
+                    # 如果左右距离过远
+                    if math.fabs(y)>100:
+                        rospy.loginfo("Too far! right or left")
+                        self.Fly(['y', int(y/10)])
+                    # 如果上下距离过远
+                    if math.fabs(z)>100:
+                        rospy.loginfo("Too high/low! up or down")
+                        self.Fly(['z', int(z/9)])
+            else:
+                return -2
+            return cr
+        
+        
     
+            
     # 判断是否检测到货物
     def detectTarget(self):
         self.Fly(['r', 0])#stop
@@ -507,11 +613,11 @@ class TestNode:
         # 根据导航信息发布无人机控制命令
         magnitude = next_nav[1]
         if magnitude==0:
-            self.publishCommand('stop')
+            rospy.sleep(1)
             return
         direction = self.nav_dict[next_nav[0]][(magnitude>0)*1]
         magnitude = round(math.fabs(magnitude))
-        rospy.loginfo("Fly: "+str(direction)+" "+str(int(magnitude)))
+        rospy.loginfo("Fly: "+str(direction)+str(int(magnitude)))
         # 最大移动尺度
         dmove = self.max_dis_dict[next_nav[0]]
         while magnitude>dmove:
@@ -527,17 +633,17 @@ class TestNode:
             # rospy.loginfo("dt_dmove="+str(rospy.Time.now().to_sec()-t_begin))
         # 最小移动尺度
         dmove = self.min_dis_dict[next_nav[0]]
-        if next_nav[0]!='r':
-            self.Adjust()
         if magnitude<dmove:
             self.publishCommand(self.nav_dict[next_nav[0]][(magnitude<0)*1]\
                                 + str(int(2*dmove)))
             rospy.sleep(3)#max(1.5, float(2*dmove/10))
             self.publishCommand(direction+str(int(2*dmove+magnitude)))
-            rospy.sleep(3)#max(1.5, float((2*dmove+magnitude)/10))
+            # rospy.sleep(3)#max(1.5, float((2*dmove+magnitude)/10))
         else:
             self.publishCommand(direction+str(int(magnitude)))
-        rospy.sleep(3)#max(1.5, float(magnitude/10/2))
+        rospy.sleep(max(3, float(magnitude/10/4)))#max(1.5, float(magnitude/10/2))
+        if next_nav[0]!='r':
+            self.Adjust()
     
     def Adjust(self):
         adjusted = False
@@ -559,9 +665,11 @@ class TestNode:
                 rospy.sleep(max(1.5, float(round(yaw_diff/10))))
             else:
                 adjusted = True
+        '''
         # 悬停的同时应该可以调整好pitch和roll
         self.publishCommand('stop')
         rospy.sleep(0.2)
+        '''
     
     # 接收前视相机图像
     def imageCallback(self, msg):
@@ -594,7 +702,7 @@ class TestNode:
         self.is_begin_ = msg.data
     # 接收相机内参
     def camera_info_callback(self, msg):
-        self.camera_info = [msg.K[2], msg.K[5]]
+        self.camera_info = [msg.K[2], msg.K[5], msg.K[0], msg.K[4]]
 
 if __name__ == '__main__':
     cn = TestNode()

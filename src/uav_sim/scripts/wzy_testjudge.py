@@ -56,12 +56,12 @@ class TestNode:
         self.detect_state = 0   # 检测货物: 0机身下降; 1逆时针; 2顺时针
         self.theta = 0  # yaw角度控制: 0 --> 90 --> 180
         # 移动距离、货物颜色阈值参数
-        self.min_dis_dict = {'x': 20, 'y': 20, 'z': 20, 'r': 1}
+        self.min_dis_dict = {'x': 20, 'y': 20, 'z': 20, 'r': 10}
         self.max_dis_dict = {'x': 500, 'y': 500, 'z': 500, 'r': 360}
         self.nav_dict = {'x': ["back ", "forward "],
                          'y': ["left ", "right "],
                          'z': ["down ", "up "],
-                         'r': ["ccw", "cw"]} # 旋转，逆时针为-顺时针为+，采用degree单位
+                         'r': ["ccw ", "cw "]} # 旋转，逆时针为-顺时针为+，采用degree单位
         self.color_dict = {"r":[{"lower":np.array([0,43,46]), "upper":np.array([10,255,255])},\
                                 {"lower":np.array([156,43,46]), "upper":np.array([180,255,255])}],
                            "y":[{"lower":np.array([26,43,46]), "upper":np.array([34,255,255])}],
@@ -71,6 +71,10 @@ class TestNode:
         self.is_begin_ = True#由裁判机发布的开始信号
         self.ring_num_ = 0#穿过的圆环编号
         self.target_result_ = None#识别到的货物
+        
+        # 发布的图片
+        self.image_forward = None
+        self.image_down = None
         
         # 订阅与发布
         self.commandPub_ = rospy.Publisher('/m3e/cmd_string', String, queue_size=100)  # 发布无人机控制信号
@@ -98,22 +102,21 @@ class TestNode:
     # 按照一定频率，根据无人机的不同状态进行决策，并发布无人机控制信号
     def decision(self):
         # 处理上次 switch 中可能传来的导航信息: 穿环前进;检测货物前降落
+        rospy.logwarn("[Decision] new round: navigate")
         while len(self.navigating_queue_)>0:
             next_nav = self.navigating_queue_.popleft()
+            rospy.loginfo("next_nav: "+str(next_nav))
             self.Fly(next_nav)
-        
-        switch = True # 是否进入状态转移与导航信息处理函数
         
         if self.flight_state_ == self.FlightState.WAITING:  # 等待裁判机发布开始信号后，起飞
             rospy.logwarn('State: WAITING')
             rospy.sleep(1.5)
             self.publishCommand('takeoff')
             rospy.loginfo("Take off!")
-            rospy.sleep(4)
+            rospy.sleep(2)
             # 起飞后可能需要根据仿真情况调整上下高度?
-            # self.navigating_queue_.append(['z', 100])
+            # self.navigating_queue_.append(['z', 20])
             self.next_state_ = self.FlightState.NAVIGATING
-            switch = False
         
         elif self.flight_state_ == self.FlightState.NAVIGATING:#无人机根据视觉定位导航飞行
             rospy.logwarn('State: NAVIGATING')
@@ -133,7 +136,6 @@ class TestNode:
                     self.targetPub_.publish(self.target_result_)
                 # 已经确定下一个状态为“导航”，不需要再次进入状态转移函数
                 self.flight_state_=self.FlightState.NAVIGATING
-                switch = False
             #若没有检测到货物，则采取一定的策略，继续寻找货物
             else:
                 pass
@@ -153,26 +155,35 @@ class TestNode:
         else:
             pass
         
-        if switch:
-            self.switchNavigatingState()#调用状态转移函数
+        self.switchNavigatingState()#调用状态转移函数
     
     # 在飞行过程中，更新导航状态和信息
     def switchNavigatingState(self):
         if self.flight_state_ == self.FlightState.WAITING:
-            rospy.logwarn("[switch-waiting] Hey! this can't be approached!")
             self.next_state_ = self.FlightState.NAVIGATING
         if self.flight_state_ == self.FlightState.NAVIGATING:#如果当前状态为“导航”，则处理self.image_，得到无人机当前位置与圆环的相对位置，更新下一次导航信息和飞行状态
             # 可能需要先检测二维码，以保证距离合适
             distance = self.detectApriltag()
+            # 好吧，起飞阶段莫得二维码
             if distance<200:
                 pass    # 考虑在距离过短时适当上升
             # 然后需要调整位姿
             self.Adjust()
             # 检测圆环位置: 借助圆半径估计位置, 阈值100或许可以根据相机参数和圆环参数等微调
             cr = self.detectCircle()
-            if cr<0:    # 未检测到圆环
-                pass
-            if cr<100:  # 试探性地前进; 可能需要修改以应对穿环中/穿环后检测到其他圆环的情况
+            if cr<0:    # 未检测到圆环或出现异常
+                # 异常值：-1为找不到图像；-2为检测不到圆；-3未为疑似未起飞()；-4为没有合适的圆
+                if cr==-3:
+                    self.next_state_ = self.FlightState.WAITING
+                # 检测不到圆，可能高度不够（或离得太近）
+                elif cr==-2:
+                    pass
+                else:
+                    pass
+            # (调试)如果cr过小，是不是检测到远处的圆环了?
+            elif cr<30:
+                rospy.loginfo("[switch-Navigating] cr="+str(cr))
+            elif cr<100:  # 试探性地前进; 可能需要修改以应对穿环中/穿环后检测到其他圆环的情况
                 self.navigating_queue_.append(['x', 100])
             else:
                 # 距离合适，尝试前进(200可能需要结合cr和相机参数等修改)
@@ -219,7 +230,7 @@ class TestNode:
         self.flight_state_=self.next_state_#更新飞行状态
 
     # 检测二维码并估计距离
-    def detectApriltag(self)->float:
+    def detectApriltag(self):
         try:
             image_down_cp = self.image_down_.copy()
             image_down_gray = cv2.cvtColor(image_down_cp, cv2.COLOR_BGR2GRAY)#转换为灰度图
@@ -253,42 +264,179 @@ class TestNode:
                     if math.fabs(pitch)<2 and math.fabs(roll)<2:
                         # 认为误差足够小，所以尝试估算距离；可能需要用到相机焦距等参数
                         return -1
-                self.image_tag_pub.publish(self.bridge_.cv2_to_imgmsg(image_down_cp, encoding='bgr8'))
+                self.image_down = image_down_cp
+                # self.image_tag_pub.publish(self.bridge_.cv2_to_imgmsg(image_down_cp, encoding='bgr8'))
             return -1
         except CvBridgeError as e:
             print(e)
             return -1
     
-    # 检测圆环位置并计算导航信息
-    def detectCircle(self)->int:    # 返回圆环半径(图像)
-        if self.image_ is None:
-            return False
-        image_circle = self.image_.copy()
-        #处理前视相机图像，检测货物
-        image_gray = cv2.cvtColor(image_circle, cv2.COLOR_BGR2gray)
-        image_g = cv2.GaussianBlur(image_gray, (3, 3), 0)#滤波
-        circles = cv2.HoughCircles(image_g, cv2.HOUGH_GRADIENT, 1, 100, param1=80, param2=40, minRadius=20, maxRadius=150)  #霍夫圆检测
-        if circles is not None:
-            circles = circles.astype(int)
-            # 试图比较以保留最大半径圆的信息并导航
-            cinfo = np.array([0, 0, 0]).astype(int)
-            for i in circles[0,:]:
-                cv2.circle(image_circle, (i[0], i[1]), i[2], (125, 125, 125), 2)    # 画圆
-                cv2.circle(image_circle, (i[0], i[1]), 2, (125, 125, 125), 2)       # 画圆心
-                #输出圆心的图像坐标和半径
-                rospy.loginfo("( %d , %d ), r= %d", i[0], i[1], i[2])
-                if i[2]> cinfo[2]:
-                    cinfo = i
-            cv2.circle(image_circle, (cinfo[0], i[1]), cinfo[2], (0, 0, 255), 4)    # 画圆
-            cv2.circle(image_circle, (cinfo[0], i[1]), 2, (0, 0, 255), 3)           # 画圆心
-            self.image_circle_pub.publish(self.bridge_.cv2_to_imgmsg(image_circle,encoding='bgr8'))
-            y = (cinfo[0] - self.camera_info[0]) / cinfo[2] * 70    # 图像x轴(左-右+), 实际y方向(左-右+)
-            z = -(cinfo[1] - self.camera_info[1]) / cinfo[2] * 70   # 图像y轴(下+上-), 实际z方向(下-上+)
-            self.navigating_queue_.append(['y', y])
-            self.navigating_queue_.append(['z', z])
-            return cinfo[2]
+    # 区分是货物还是圆环
+    def isTarget(self, image_mask, circle):
+        # image_mask: 原图掩码如image_target, image_circle经过滤色后的mask
+        # circle: 霍夫圆或外接圆的信息(x, y, r)
+        img_zero = np.zeros(np.shape(image_mask), dtype=np.uint8)
+        # 空白图，准备绘制检测的圆
+        enclosing_circle = img_zero.copy()
+        # 都画实心圆…外接空心圆与圆环重合很少!
+        enclosing_circle = cv2.circle(enclosing_circle, (circle[0], circle[1]), circle[2], (255, 255, 255), -1)
+        img_base = enclosing_circle # 这里mask只有两个维度即xy，没有RGB维度
+        # 借助检测的圆从原图掩码中抠出检测出的部分
+        image_res = image_mask.copy()
+        img_res = cv2.add(image_res, img_zero, mask=img_base)#添加掩码
+        # 分别计算面积(像素和)
+        cbase = (sum(sum(img_base.astype(int)/255)))
+        ctarget = (sum(sum(img_res.astype(int)/255)))
+        occupy_rate = float(ctarget)/float(cbase)
+        # 设定阈值，占比大于阈值的应该是目标货物或圆环
+        if occupy_rate>0.6:
+            rospy.loginfo("[isTarget] occupy_rate=%f ", occupy_rate)
+            return True
+        # 其他模糊情况有待调试
         else:
+            rospy.loginfo("[isTarget] occupy_rate=%f ", occupy_rate)
+            return False
+    
+    # 尝试寻找轮廓和外接圆并绘制，与期望进行比对并返回可能的坐标
+    def checkContours(self, image_mask, image_org, check_ball=True):
+        # image_mask: 经过颜色过滤的掩码
+        # image_org: 原图，应该可以是rgb或bgr的吧，主要是为了获取图像大小并输出标注
+        # check_ball: 圆环检测主要是查漏，所以要
+        binaries, contours, hierarchy = cv2.findContours(image_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        circles = []
+        if len(contours)>0:
+            img_zero = np.zeros(np.shape(image_org), dtype=np.uint8)
+            image_org_res = cv2.add(image_org, img_zero, mask=image_mask)#添加掩码
+            dst = image_org_res.copy()
+            dst = cv2.drawContours(dst, contours, -1, (125, 125, 125), 3)
+            # 会不会有多个边缘?
+            for contour in contours:
+                (cx, cy), cr = cv2.minEnclosingCircle(contour)
+                dst = cv2.circle(dst, (int(cx), int(cy)), int(cr), (201, 172, 221), 2)
+                # 检测是否为圆(可能需要比较不同颜色的占比?)
+                circle = np.array([cx,cy,cr]).astype(int)
+                # 若能检测到实心，需要检测球则成功，否则检测圆环失败
+                if self.isTarget(image_mask=image_mask, circle=circle):
+                    if check_ball:
+                        circles.append(circle)
+                    # 实心的不是圆环
+                    else:
+                        continue
+                # 若无实心，应该不是球，检测球的失败了
+                elif check_ball:
+                    continue
+                # 若是检测圆环，则应该是圆环了
+                else:
+                    circles.append(circle)
+        else:
+            return None
+        self.image_forward = dst
+        # self.image_circle_pub.publish(self.bridge_.cv2_to_imgmsg(dst,encoding='bgr8'))
+        # 找不到合适的边界或检测(圆环)失败
+        if len(circles)>0:
+            return circles
+        else:
+            return None
+    
+    # 检测圆环位置并计算导航信息
+    def detectCircle(self):    # 返回圆环半径(图像)
+        # 图像出错，返回异常值-1
+        if self.image_ is None:
             return -1
+        image_circle = self.image_.copy()
+        #处理前视相机图像，检测圆环(也可能是货物)，这里先利用了黄色过滤
+        image_circle_rgb = cv2.cvtColor(image_circle, cv2.COLOR_BGR2RGB)
+        image_hsv = cv2.cvtColor(image_circle_rgb, cv2.COLOR_RGB2HSV)
+        color_range = self.color_dict['y'][0]
+        mask = cv2.inRange(image_hsv, color_range["lower"], color_range["upper"])
+        # 霍夫圆检测
+        # image_gray = cv2.cvtColor(image_circle, cv2.COLOR_BGR2GRAY)
+        image_g = cv2.GaussianBlur(mask, (3, 3), 0)#滤波
+        circles = cv2.HoughCircles(image_g, cv2.HOUGH_GRADIENT, 1, 100, param1=80, param2=40, minRadius=20, maxRadius=150)  #霍夫圆检测
+        # 如果霍夫圆检测成功，则将数据加入队列；否则队列为空、circles为None，isHough置为False
+        queue = deque()
+        isHough = True
+        if circles is not None:
+            for i in circles[0,:]:
+                queue.append(i)
+        # 该循环至多执行两次: 第一次是前面检测出了霍夫圆; 第二次是这些圆都不是合适的圆环. 或一次: 未检测出霍夫圆, 直接用外接圆
+        while isHough:
+            # 队列为空要么是第一次没找到霍夫圆，要么是第一次找到后依次检查都被排除pop了，没有符合条件的(否则pop后还会append)
+            if len(queue)==0:
+                # 取消循环
+                isHough = False
+                # # 找不到霍夫圆可能是机身(上下左右)偏离过大了; 可能正确的圆环部分未进入视野, 所以尝试用外接圆寻找**有缺陷的圆环**
+                # circles = self.checkContours(image_mask=mask, image_org=image_circle, check_ball=False)
+            # 检查潜在的圆环(可能找到了一些被遮挡的圆)
+            if circles is not None:
+                if isHough:
+                    circles = circles[0,:]
+                circles = np.array(circles).astype(int)
+                # 保留最大半径圆的信息以便导航 (2位设置最小半径=30;可能需要调整)
+                cinfo = np.array([0, 0, 30]).astype(int)
+                for i in circles:
+                    # 假如是第一次检测出霍夫圆, 则每次首先pop掉一组圆的信息(从左侧,因为符合要求的会从右侧补上)
+                    if len(queue)>0:
+                        rospy.loginfo("[detectCircle] %d circle(s) in the queue now.", len(queue))
+                        _ = queue.popleft() # i=queue.popleft()
+                    # 确认是否为圆环(正常情况下应该不需要? 因为机身较高看不到货物)
+                    if not self.isTarget(image_mask=mask, circle=i):
+                        cv2.circle(image_circle, (i[0], i[1]), i[2], (125, 125, 125), 2)    # 画圆
+                        cv2.circle(image_circle, (i[0], i[1]), 2, (125, 125, 125), 2)       # 画圆心
+                        y = (i[0] - self.camera_info[0]) / i[2] * 35    # 图像x轴(左-右+), 实际y方向(左-右+)
+                        z = -(i[1] - self.camera_info[1]) / i[2] * 35   # 图像y轴(下+上-), 实际z方向(下-上+)
+                        #输出圆心的图像坐标和半径; 输出相对距离
+                        rospy.loginfo("( %d , %d ), r= %d; y_LR=%f, z_DU=%f", i[0], i[1], i[2], y, z)
+                        # 如果左右距离过远还是需要排除…
+                        if math.fabs(y)>120:
+                            rospy.loginfo("Too far! right or left")
+                        # 如果上下距离过远,是不是没起飞? 或者上升不够?
+                        if math.fabs(z)>60:
+                            rospy.loginfo("Too high/low! up or down")
+                            # 还没穿过一个圆环, 说明刚才可能起飞失败了! 返回异常值-3
+                            self.navigating_queue_.append(['z', int(z)])
+                            if self.ring_num_==0:
+                                return -3
+                            # 其他情况另作考虑，比如刚经过圆环2或4、检测货物后没飞起来?
+                            else:
+                                pass
+                        # 上下左右距离没啥问题, 再看半径是否符合要求(前后距离)
+                        elif i[2]>cinfo[2]:
+                            cinfo = np.array([y, z, i[2]]).astype(int)
+                            # 如果是在检测霍夫圆, 那么可以把这个信息放回队列了
+                            if isHough:
+                                rospy.loginfo("queue++, detected an underlying circle: "+str(cinfo))
+                                queue.append(cinfo)
+                        # 过滤掉其他距离较远的圆环
+                        else:
+                            rospy.loginfo("Too far!(forward) is that the next circle?")
+                    # 如果检测发现是货物,其实可以直接到detectTarget了(×) 但最好想清楚以防重复检测
+                    else:
+                        rospy.loginfo("Oh no, this might be a ball! (color=\'y\')")
+                # 假如是霍夫圆检测而且都无效, 则直接下一步(外接圆)
+                if isHough and len(queue)==0:
+                    continue
+                # 非霍夫圆或者队列还有信息则意味着能检测出圆环(或毫无办法了), 总之可跳出循环
+                else:
+                    isHough = False
+                # cinfo无效, 无法检测出合适的圆环, 直接跳出循环
+                if cinfo[0]==0:
+                    break
+                cv2.circle(image_circle, (cinfo[0], cinfo[1]), cinfo[2], (0, 0, 255), 4)    # 画圆
+                cv2.circle(image_circle, (cinfo[0], cinfo[1]), 2, (0, 0, 255), 3)           # 画圆心
+                self.image_forward = image_circle
+                # self.image_circle_pub.publish(self.bridge_.cv2_to_imgmsg(image_circle,encoding='bgr8'))
+                y = cinfo[0]
+                z = cinfo[1]
+                rospy.loginfo("Circle: (LR, DU) = (dy, dz) = ( %d , %d )(move), r = %d (image)", y, z, cinfo[2])
+                self.navigating_queue_.append(['y', y])
+                self.navigating_queue_.append(['z', z])
+                return cinfo[2]
+            # 未检测到圆环，返回异常值-2; 可能的情况: 转弯失败或转弯后左右方向偏离较大
+            else:
+                return -2
+        # 未检测到合适的圆环，返回异常值-4
+        return -4
     
     # 判断是否检测到货物
     def detectTarget(self):
@@ -322,41 +470,27 @@ class TestNode:
                         # 输出圆心的图像坐标和半径
                         rospy.loginfo("( %d , %d ), r= %d", i[0], i[1], i[2])
                         self.image_circle_pub.publish(self.bridge_.cv2_to_imgmsg(image_target,encoding='bgr8'))
-                        # 内接正方形像素点求和取平均，查看是否为圆环
-                        len_a = round(i[2]/math.sqrt(2))-1
-                        inscribed_square = mask[(i[0]-len_a):(i[0]+len_a), (i[1]-len_a):(i[1]+len_a)]
-                        occupy_rate = sum(sum((inscribed_square.astype(int))/255))/inscribed_square.size
-                        # 设定阈值，占比大于阈值的是球而非圆环
-                        if occupy_rate>0.7:
-                            rospy.logwarn("Detected ball with color \'%s\'~", color)
+                        if self.isTarget(image_mask=mask, circle=i):
+                            if len(target)==1 and target=='r' and color=='r':
+                                rospy.loginfo("[detectTarget] Hough-Detected 2 red balls")
+                            target += color
+                            break
+                        # # 内接正方形像素点求和取平均，查看是否为圆环
+                        # len_a = round(i[2]/math.sqrt(2))-1
+                        # inscribed_square = mask[(i[0]-len_a):(i[0]+len_a), (i[1]-len_a):(i[1]+len_a)]
+                        # occupy_rate = sum(sum((inscribed_square.astype(int))/255))/inscribed_square.size
+                        # # 设定阈值，占比大于阈值的是球而非圆环
+                        # if occupy_rate>0.7:
+                        #     rospy.logwarn("Detected ball with color \'%s\'~", color)
                 else:
-                    # 寻找轮廓和外接圆并绘制
-                    binaries, contours, hierarchy = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                    if len(contours)>0:
-                        img_zero = np.zeros(np.shape(image_target), dtype=np.uint8)
-                        image_target_res = cv2.add(image_target_rgb, img_zero, mask=mask)#添加掩码
-                        dst = image_target_res.copy()
-                        dst = cv2.drawContours(dst, contours, -1, (125, 125, 125), 3)
-                        (cx, cy), cr = cv2.minEnclosingCircle(contours[0])
-                        dst = cv2.circle(dst, (int(cx), int(cy)), int(cr), (201, 172, 221), 2)
-                        # 在空白图上画实心圆
-                        enclosing_circle = img_zero.copy()
-                        enclosing_circle = cv2.circle(enclosing_circle, (int(cx), int(cy)), int(cr), (255, 255, 255), -1)
-                        img_base = enclosing_circle[:,:,0]#都是255所以随便一个维度都行
-                        img_res = cv2.add(mask, img_zero[:,:,0], mask=img_base)#添加掩码
-                        cbase = (sum(sum(img_base.astype(int)/255)))
-                        ctarget = (sum(sum(img_res.astype(int)/255)))
-                        occupy_rate = float(ctarget)/float(cbase)
-                        rospy.loginfo("img.shape: "+str(img_res.shape)+", "+str(img_base.shape))
-                        rospy.loginfo("%f/%f=%f ", ctarget, cbase, occupy_rate)
-                        self.image_circle_pub.publish(self.bridge_.cv2_to_imgmsg(dst,encoding='bgr8'))
-                        # 设定阈值，占比大于阈值的很可能是货物
-                        if occupy_rate>0.6:
-                            rospy.loginfo("Detected ball with color \'%s\'~", color)
-                        else:
-                            pass
+                    circles = self.checkContours(image_mask=mask, image_org=image_target, check_ball=True)
+                    if circles is not None:
+                        if len(circles)>1:
+                            rospy.loginfo("[detectTarget] Contours-Detected %d balls with color: \'%s\'", len(circles), color)
+                        target += color
         # 若检测到了货物，则发布识别到的货物信号,例如识别到了红色和黄色小球，则发布“ry”
         if len(target)==1:
+            rospy.logwarn("Detected ball with color \'%s\'~", target)
             if self.ring_num_==1:
                 self.target_result_ = target
             if self.ring_num_==4:
@@ -377,6 +511,7 @@ class TestNode:
             return
         direction = self.nav_dict[next_nav[0]][(magnitude>0)*1]
         magnitude = round(math.fabs(magnitude))
+        rospy.loginfo("Fly: "+str(direction)+" "+str(int(magnitude)))
         # 最大移动尺度
         dmove = self.max_dis_dict[next_nav[0]]
         while magnitude>dmove:
@@ -388,19 +523,21 @@ class TestNode:
             # t_begin = rospy.Time.now().to_sec()
             self.publishCommand(direction+str(int(dmove)))
             magnitude -= dmove
-            rospy.sleep(max(1.5, float(dmove/10)))
+            rospy.sleep(3)#max(1.5, float(dmove/10))
             # rospy.loginfo("dt_dmove="+str(rospy.Time.now().to_sec()-t_begin))
         # 最小移动尺度
         dmove = self.min_dis_dict[next_nav[0]]
+        if next_nav[0]!='r':
+            self.Adjust()
         if magnitude<dmove:
             self.publishCommand(self.nav_dict[next_nav[0]][(magnitude<0)*1]\
                                 + str(int(2*dmove)))
-            rospy.sleep(max(1.5, float(2*dmove/10)))
+            rospy.sleep(3)#max(1.5, float(2*dmove/10))
             self.publishCommand(direction+str(int(2*dmove+magnitude)))
-            rospy.sleep(max(1.5, float((2*dmove+magnitude)/10)))
+            rospy.sleep(3)#max(1.5, float((2*dmove+magnitude)/10))
         else:
             self.publishCommand(direction+str(int(magnitude)))
-        rospy.sleep(max(1.5, float(magnitude/10)))
+        rospy.sleep(3)#max(1.5, float(magnitude/10/2))
     
     def Adjust(self):
         adjusted = False
@@ -414,10 +551,10 @@ class TestNode:
             if math.fabs(yaw_diff)>180:
                 yaw_diff = (360 - yaw_diff) if yaw_diff>0 else (360 + yaw_diff)
             if math.fabs(yaw_diff)>10:
-                rospy.loginfo("Adjust yaw (from yaw="+str(yaw)+" to dest="+str(self.theta))
                 direction = self.nav_dict['r'][(yaw_diff>0)*1]
                 yaw_diff = round(math.fabs(yaw_diff))
                 # yaw_diff = int(max(yaw_diff, self.min_dis_dict['r'])) # 最小移动尺度
+                rospy.loginfo("Adjust yaw (from yaw="+str(yaw)+" to dest="+str(self.theta)+" by \'"+direction+str(int(yaw_diff))+"\'")
                 self.publishCommand(direction+str(int(yaw_diff)))
                 rospy.sleep(max(1.5, float(round(yaw_diff/10))))
             else:
@@ -430,12 +567,16 @@ class TestNode:
     def imageCallback(self, msg):
         try:
             self.image_ = self.bridge_.imgmsg_to_cv2(msg, 'bgr8')
+            if self.image_forward is not None:
+                self.image_circle_pub.publish(self.bridge_.cv2_to_imgmsg(self.image_forward,encoding='bgr8'))
         except CvBridgeError as err:
             print(err)
     # 接受下视相机图像
     def imageCallback_down(self,msg):
         try:
             self.image_down_ = self.bridge_.imgmsg_to_cv2(msg, 'bgr8')
+            if self.image_down is not None:
+                self.image_tag_pub.publish(self.bridge_.cv2_to_imgmsg(self.image_down,encoding='bgr8'))
         except CvBridgeError as err:
             print(err)
     # 向相关topic发布无人机控制命令
